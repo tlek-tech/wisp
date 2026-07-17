@@ -1,0 +1,14 @@
+# Composer dependencies
+/vendor/
+
+# Local environment configuration
+.env
+
+# PHPUnit cache
+.phpunit.result.cache
+
+# OS generated files
+Thumbs.db
+EHthumbs.db
+Desktop.ini
+.DS_Store

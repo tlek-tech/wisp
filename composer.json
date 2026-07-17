@@ -1,0 +1,15 @@
+{
+    "name": "tlek/wisp-framework",
+    "description": "A Cloudflare Workers style micro framework for PHP",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=7.4",
+        "vlucas/phpdotenv": "^5.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Wisp\\": "src/"
+        }
+    }
+}
