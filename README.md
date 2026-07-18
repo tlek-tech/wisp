@@ -43,7 +43,7 @@ api_php/
 │   ├── App.php                 # Core router, DI container, autowiring, & middleware pipeline
 │   ├── Request.php             # Request model wrapper
 │   ├── Response.php            # Response model wrapper
-│   └── DB.php                  # Database wrapper around PDO (MySQL 5+)
+│   └── DB.php                  # Database wrapper around PDO (MySQL, PostgreSQL, SQLite)
 │
 ├── middlewares/                # Custom route/global middleware classes
 │   ├── AuthMiddleware.php      # Example: Bearer token validation middleware
@@ -63,13 +63,36 @@ api_php/
 
 ### 1. Requirements
 - PHP 7.4 or higher (fully compatible with PHP 8.0, 8.1, 8.2, 8.3+)
-- MySQL (if using database functionality)
+- MySQL, PostgreSQL, or SQLite (if using database functionality)
 - Composer (optional)
 
 ### 2. Setup
 Clone the repository, create your `.env` configuration file from the template, and configure your database settings:
 ```bash
 cp .env.example .env
+```
+
+Set `DB_CONNECTION` to choose the driver (`mysql`, `pgsql`, or `sqlite`):
+```dotenv
+# MySQL (default)
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=my_db
+DB_USERNAME=root
+DB_PASSWORD=
+
+# PostgreSQL
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=my_db
+DB_USERNAME=postgres
+DB_PASSWORD=
+
+# SQLite (DB_DATABASE is a file path, or ":memory:")
+DB_CONNECTION=sqlite
+DB_DATABASE=storage/database.sqlite
 ```
 
 If you wish to use Composer packages:

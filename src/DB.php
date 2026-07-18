@@ -8,21 +8,50 @@ class DB {
 
     public static function connect(): PDO {
         if (self::$instance === null) {
-            $host = $_ENV['DB_HOST'] ?? '127.0.0.1';
-            $port = $_ENV['DB_PORT'] ?? '3306';
-            $db   = $_ENV['DB_DATABASE'] ?? '';
-            $user = $_ENV['DB_USERNAME'] ?? 'root';
-            $pass = $_ENV['DB_PASSWORD'] ?? '';
-            $charset = 'utf8mb4';
-
-            $dsn = "mysql:host=$host;port=$port;dbname=$db;charset=$charset";
+            $driver = strtolower($_ENV['DB_CONNECTION'] ?? 'mysql');
             $options = [
                 PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES   => false,
             ];
 
-            self::$instance = new PDO($dsn, $user, $pass, $options);
+            switch ($driver) {
+                case 'pgsql':
+                case 'postgres':
+                case 'postgresql':
+                    $host = $_ENV['DB_HOST'] ?? '127.0.0.1';
+                    $port = $_ENV['DB_PORT'] ?? '5432';
+                    $db   = $_ENV['DB_DATABASE'] ?? '';
+                    $user = $_ENV['DB_USERNAME'] ?? 'postgres';
+                    $pass = $_ENV['DB_PASSWORD'] ?? '';
+
+                    $dsn = "pgsql:host=$host;port=$port;dbname=$db";
+                    self::$instance = new PDO($dsn, $user, $pass, $options);
+                    break;
+
+                case 'sqlite':
+                    $path = $_ENV['DB_DATABASE'] ?? '';
+                    $dsn  = $path === '' || $path === ':memory:'
+                        ? 'sqlite::memory:'
+                        : 'sqlite:' . $path;
+
+                    self::$instance = new PDO($dsn, null, null, $options);
+                    self::$instance->exec('PRAGMA foreign_keys = ON');
+                    break;
+
+                case 'mysql':
+                default:
+                    $host = $_ENV['DB_HOST'] ?? '127.0.0.1';
+                    $port = $_ENV['DB_PORT'] ?? '3306';
+                    $db   = $_ENV['DB_DATABASE'] ?? '';
+                    $user = $_ENV['DB_USERNAME'] ?? 'root';
+                    $pass = $_ENV['DB_PASSWORD'] ?? '';
+                    $charset = 'utf8mb4';
+
+                    $dsn = "mysql:host=$host;port=$port;dbname=$db;charset=$charset";
+                    self::$instance = new PDO($dsn, $user, $pass, $options);
+                    break;
+            }
         }
         return self::$instance;
     }
