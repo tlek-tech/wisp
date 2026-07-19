@@ -62,6 +62,25 @@ class_alias('Wisp\DB', 'DB');
 
 $app = new Wisp\App();
 
+// Automatically load all plugins from the plugins/ folder
+$pluginsDir = __DIR__ . '/../plugins';
+if (is_dir($pluginsDir)) {
+    foreach (scandir($pluginsDir) as $item) {
+        if ($item === '.' || $item === '..') {
+            continue;
+        }
+        $fullPath = $pluginsDir . '/' . $item;
+        if (is_dir($fullPath)) {
+            $pluginFile = $fullPath . '/' . $item . '.php';
+            if (file_exists($pluginFile)) {
+                require_once $pluginFile;
+            }
+        } elseif (is_file($fullPath) && pathinfo($fullPath, PATHINFO_EXTENSION) === 'php') {
+            require_once $fullPath;
+        }
+    }
+}
+
 // Load Service registrations
 if (file_exists(__DIR__ . '/../config/services.php')) {
     require_once __DIR__ . '/../config/services.php';

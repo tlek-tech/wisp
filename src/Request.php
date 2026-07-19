@@ -9,6 +9,8 @@ class Request {
     public array $query = [];
     public array $params = [];
     private ?string $rawBody = null;
+    private array $attributes = [];
+    private static array $macros = [];
 
     public function __construct() {
         $this->method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -49,5 +51,34 @@ class Request {
             }
         }
         return null;
+    }
+
+    // --- Plugin injection: per-request attribute bag ---
+    // Lets middleware (e.g. a JWT plugin) attach data that later middleware/route handlers can read.
+
+    public function setAttribute(string $key, $value): void {
+        $this->attributes[$key] = $value;
+    }
+
+    public function getAttribute(string $key, $default = null) {
+        return $this->attributes[$key] ?? $default;
+    }
+
+    // --- Plugin injection: macro registry ---
+    // Lets plugins add new callable methods to Request without modifying this class.
+
+    public static function macro(string $name, callable $fn): void {
+        self::$macros[$name] = $fn;
+    }
+
+    public function __call(string $name, array $args) {
+        if (!isset(self::$macros[$name])) {
+            throw new \BadMethodCallException("Method {$name} does not exist on Request.");
+        }
+        $macro = self::$macros[$name];
+        if ($macro instanceof \Closure) {
+            $macro = \Closure::bind($macro, $this, static::class);
+        }
+        return call_user_func_array($macro, $args);
     }
 }

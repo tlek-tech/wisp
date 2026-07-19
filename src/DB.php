@@ -5,6 +5,18 @@ use PDO;
 
 class DB {
     private static ?PDO $instance = null;
+    private static ?string $pluginClass = null;
+
+    public static function registerPlugin(string $className): void {
+        self::$pluginClass = $className;
+    }
+
+    public static function table(string $table) {
+        if (self::$pluginClass && class_exists(self::$pluginClass)) {
+            return new self::$pluginClass($table);
+        }
+        throw new \Exception("Query builder plugin is not registered.");
+    }
 
     public static function connect(): PDO {
         if (self::$instance === null) {
