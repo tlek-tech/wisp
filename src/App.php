@@ -6,12 +6,17 @@ class App {
     private array $middlewares = [];
     private array $services = [];
     private array $resolvedServices = [];
+    private array $callbackResolvers = [];
     private $notFoundHandler;
 
     public function __construct() {
         $this->notFoundHandler = function(Request $req) {
             return Response::json(['error' => 'Not Found'], 404);
         };
+    }
+
+    public function registerCallbackResolver(callable $resolver) {
+        $this->callbackResolvers[] = $resolver;
     }
 
     // --- Service Container Methods (with Auto-wiring) ---
@@ -220,7 +225,8 @@ class App {
 
                 // Add final route callback
                 $handlers[] = function($req, $next) use ($route) {
-                    return call_user_func($route['callback'], $req, $this);
+                    $callback = $this->resolveCallback($route['callback']);
+                    return call_user_func($callback, $req, $this);
                 };
                 $routeFound = true;
                 break;
@@ -254,6 +260,29 @@ class App {
                 Response::text((string)$response)->send();
             }
         }
+    }
+
+    private function resolveCallback($callback): callable {
+        if ($callback instanceof \Closure) {
+            return $callback;
+        }
+
+        if (is_array($callback) && count($callback) === 2 && is_object($callback[0])) {
+            return $callback;
+        }
+
+        foreach ($this->callbackResolvers as $resolver) {
+            $resolved = $resolver($callback, $this);
+            if ($resolved !== null && is_callable($resolved)) {
+                return $resolved;
+            }
+        }
+
+        if (is_callable($callback)) {
+            return $callback;
+        }
+
+        throw new \Exception("Route callback is not callable: " . print_r($callback, true));
     }
 
     private function resolveMiddleware($mw): callable {
