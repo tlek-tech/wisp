@@ -52,9 +52,12 @@ api_php/
 ├── services/                   # Custom service classes (Auto-wired)
 │   └── TranslateService.php    # Example: Service class with automatic DB injection
 │
-└── routes/                     # Dynamic route files (Auto-loaded)
-    ├── version.php             # Example: Version check endpoint route
-    └── license.php             # Example: License and translation endpoint routes
+├── routes/                     # Dynamic route files (Auto-loaded)
+│   ├── version.php             # Example: Version check endpoint route
+│   └── license.php             # Example: License and translation endpoint routes
+│
+└── plugins/                    # Optional, downloadable add-ons (empty by default)
+    └── <name>/<name>.php       # Drop-in convention picked up automatically at boot
 ```
 
 ---
@@ -182,6 +185,31 @@ $app->get("/translate", function($req, $env) {
     ]);
 });
 ```
+
+---
+
+## Plugins
+
+Wisp's core stays intentionally minimal — optional functionality (JWT auth, a fluent
+query builder, etc.) ships as separate, downloadable plugins instead of being built
+into the framework. Nothing under `plugins/` is required for Wisp to run.
+
+**How it works:** any folder dropped into `plugins/` whose entry file matches the
+folder name (`plugins/<name>/<name>.php`), or any flat `plugins/*.php` file, is
+automatically `require`'d at boot by `public/index.php`. A plugin wires itself up
+using the extension points already built into core:
+
+- `Request::macro(string $name, callable $fn)` — add methods to every `Request` (e.g. `$req->user()`)
+- `Request::setAttribute()` / `getAttribute()` — per-request data bag for middleware to populate
+- `DB::registerPlugin(string $className)` — swap in a query builder used by `DB::table()`
+- `App::registerCallbackResolver(callable $resolver)` — support alternate route callback formats
+
+No manifest or dependency system exists yet — installing a plugin is just copying its
+`plugins/<name>/` folder into your project and setting any `.env` values it documents.
+
+**Official plugins:**
+- [wisp-jwt](../wisp-jwt) — HS256 JWT auth (`JwtMiddleware`, `\Wisp\Jwt`, `$req->user()`)
+- [wisp-db-builder](../wisp-db-builder) — fluent query builder for `DB::table()`
 
 ---
 
