@@ -18,7 +18,18 @@ class Request {
         
         $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
         $this->path = parse_url($requestUri, PHP_URL_PATH);
-        
+
+        // When the app is hosted under a subpath (e.g. https://host/rag/), BASE_PATH lets
+        // route definitions in routes/*.php stay written as if mounted at "/" — the prefix
+        // is stripped here before route matching happens in App::run().
+        $basePath = rtrim($_ENV['BASE_PATH'] ?? '', '/');
+        if ($basePath !== '' && strpos($this->path, $basePath) === 0) {
+            $this->path = substr($this->path, strlen($basePath));
+            if ($this->path === '') {
+                $this->path = '/';
+            }
+        }
+
         $this->query = $_GET;
 
         // Parse headers

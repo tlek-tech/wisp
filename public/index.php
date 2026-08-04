@@ -1,8 +1,15 @@
 <?php
-if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
-    require_once __DIR__ . '/../vendor/autoload.php';
-    if (file_exists(__DIR__ . '/../.env')) {
-        $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
+// Base directory of the application code (everything outside the public/ webroot: vendor/,
+// src/, services/, middlewares/, config/, routes/, plugins/, .env). Every path below is
+// derived from this one constant, so pointing public/ at an app root that lives somewhere
+// other than its parent directory (e.g. public/ split out to its own docroot) only requires
+// changing this line.
+define('APP_ROOT', __DIR__ . '/..');
+
+if (file_exists(APP_ROOT . '/vendor/autoload.php')) {
+    require_once APP_ROOT . '/vendor/autoload.php';
+    if (file_exists(APP_ROOT . '/.env')) {
+        $dotenv = Dotenv\Dotenv::createImmutable(APP_ROOT);
         $dotenv->load();
     }
 } else {
@@ -10,7 +17,7 @@ if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
     spl_autoload_register(function ($class) {
         // Wisp namespace
         $prefix = 'Wisp\\';
-        $base_dir = __DIR__ . '/../src/';
+        $base_dir = APP_ROOT . '/src/';
         $len = strlen($prefix);
         if (strncmp($prefix, $class, $len) === 0) {
             $relative_class = substr($class, $len);
@@ -22,7 +29,7 @@ if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
         }
 
         // Global namespace auto-load folders (services & middlewares)
-        $dirs = [__DIR__ . '/../services/', __DIR__ . '/../middlewares/'];
+        $dirs = [APP_ROOT . '/services/', APP_ROOT . '/middlewares/'];
         foreach ($dirs as $dir) {
             $file = $dir . str_replace('\\', '/', $class) . '.php';
             if (file_exists($file)) {
@@ -33,8 +40,8 @@ if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
     });
 
     // Fallback simple .env parser
-    if (file_exists(__DIR__ . '/../.env')) {
-        $lines = file(__DIR__ . '/../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (file_exists(APP_ROOT . '/.env')) {
+        $lines = file(APP_ROOT . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         foreach ($lines as $line) {
             $line = trim($line);
             if ($line === '' || strpos($line, '#') === 0) continue;
@@ -63,7 +70,7 @@ class_alias('Wisp\DB', 'DB');
 $app = new Wisp\App();
 
 // Automatically load all plugins from the plugins/ folder
-$pluginsDir = __DIR__ . '/../plugins';
+$pluginsDir = APP_ROOT . '/plugins';
 if (is_dir($pluginsDir)) {
     foreach (scandir($pluginsDir) as $item) {
         if ($item === '.' || $item === '..') {
@@ -82,17 +89,17 @@ if (is_dir($pluginsDir)) {
 }
 
 // Load Service registrations
-if (file_exists(__DIR__ . '/../config/services.php')) {
-    require_once __DIR__ . '/../config/services.php';
+if (file_exists(APP_ROOT . '/config/services.php')) {
+    require_once APP_ROOT . '/config/services.php';
 }
 
 // Load Global Middleware registrations
-if (file_exists(__DIR__ . '/../config/middlewares.php')) {
-    require_once __DIR__ . '/../config/middlewares.php';
+if (file_exists(APP_ROOT . '/config/middlewares.php')) {
+    require_once APP_ROOT . '/config/middlewares.php';
 }
 
 // Automatically load all route files from the routes/ folder
-$routesDir = __DIR__ . '/../routes';
+$routesDir = APP_ROOT . '/routes';
 if (is_dir($routesDir)) {
     foreach (glob($routesDir . '/*.php') as $routeFile) {
         require_once $routeFile;

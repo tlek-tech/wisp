@@ -1,8 +1,11 @@
 RewriteEngine On
 
 # Redirect Trailing Slashes If Not A Folder...
+# No leading slash on the substitution: this stays relative to wherever this directory
+# is mounted (e.g. an Alias under a subpath like /rag/), instead of always resolving to
+# the domain root and stripping the subpath prefix off the redirect target.
 RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^(.*)/$ /$1 [L,R=301]
+RewriteRule ^(.*)/$ $1 [L,R=301]
 
 # Handle Front Controller...
 RewriteCond %{REQUEST_FILENAME} !-d
