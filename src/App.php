@@ -144,7 +144,50 @@ class App {
 
     // --- Pipeline Execution ---
 
+    // Wisp has no other global error boundary: without this, a plain PHP warning/notice
+    // (e.g. an undefined array key) fired mid-request doesn't stop execution — the SAPI
+    // just echoes it inline (as raw HTML if display_errors is on, which many hosts default
+    // to) *before* the route's own JSON is echoed, silently corrupting the response body.
+    // Promoting it to an ErrorException makes it behave like any other error: it interrupts
+    // execution and is caught below (or by a route's own try/catch) instead of leaking into
+    // the output.
+    private function registerErrorHandling() {
+        set_error_handler(function ($errno, $errstr, $errfile, $errline) {
+            if (!(error_reporting() & $errno)) {
+                return false; // respects both @-suppression and the ini error_reporting mask
+            }
+            throw new \ErrorException($errstr, 0, $errno, $errfile, $errline);
+        });
+
+        // E_ERROR/E_PARSE/E_COMPILE_ERROR can't be caught by set_error_handler or try/catch —
+        // this is the last-resort net for those so they still end up as a clean response
+        // instead of PHP's default (potentially HTML) fatal-error output.
+        register_shutdown_function(function () {
+            $error = error_get_last();
+            if ($error === null || !in_array($error['type'], [E_ERROR, E_PARSE, E_COMPILE_ERROR, E_CORE_ERROR], true)) {
+                return;
+            }
+            error_log('[Wisp\App] Fatal error: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
+            if (ob_get_level() > 0) {
+                ob_clean();
+            }
+            if (headers_sent()) {
+                return;
+            }
+            http_response_code(500);
+            if (strpos($_SERVER['REQUEST_URI'] ?? '', '/api/') !== false) {
+                header('Content-Type: application/json; charset=utf-8');
+                echo json_encode(['error' => 'Internal Server Error']);
+            } else {
+                header('Content-Type: text/plain; charset=utf-8');
+                echo 'Internal Server Error';
+            }
+        });
+    }
+
     public function run() {
+        $this->registerErrorHandling();
+        ob_start();
         $request = new Request();
 
         // Process CORS.
@@ -249,7 +292,18 @@ class App {
             return $handler($req, $next);
         };
 
-        $response = $next($request);
+        try {
+            $response = $next($request);
+        } catch (\Throwable $e) {
+            error_log('[Wisp\App] Unhandled error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            // Discard whatever a warning-turned-exception (or the route itself) may have
+            // already echoed before throwing, so the client only ever sees the clean error
+            // below instead of a mix of stray output + error body.
+            ob_clean();
+            $response = (strpos($request->path, '/api/') === 0)
+                ? Response::json(['error' => 'Internal Server Error'], 500)
+                : Response::text('Internal Server Error', 500);
+        }
 
         if ($response instanceof Response) {
             $response->send();
@@ -260,6 +314,7 @@ class App {
                 Response::text((string)$response)->send();
             }
         }
+        ob_end_flush();
     }
 
     private function resolveCallback($callback): callable {
