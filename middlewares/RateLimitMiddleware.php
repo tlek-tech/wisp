@@ -16,7 +16,11 @@ class RateLimitMiddleware {
 
     public function handle($req, $next, $env) {
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-        $key = preg_replace('/[^a-zA-Z0-9_.:-]/', '_', $ip);
+        // ":" (present in every IPv6 address, e.g. "::1" for loopback) is invalid in Windows
+        // filenames, so it can't be left in the allowed set here even though it's harmless on
+        // Linux/macOS — otherwise every IPv6 client 500s on Windows via a fopen() error instead
+        // of getting rate-limited.
+        $key = preg_replace('/[^a-zA-Z0-9_.-]/', '_', $ip);
         $file = $this->storageDir . '/' . $key . '.json';
 
         $fp = fopen($file, 'c+');
