@@ -43,9 +43,19 @@ class DB {
 
                 case 'sqlite':
                     $path = $_ENV['DB_DATABASE'] ?? '';
-                    $dsn  = $path === '' || $path === ':memory:'
-                        ? 'sqlite::memory:'
-                        : 'sqlite:' . $path;
+                    if ($path === '' || $path === ':memory:') {
+                        $dsn = 'sqlite::memory:';
+                    } else {
+                        // A relative DB_DATABASE (e.g. "storage/database.sqlite") must not be resolved
+                        // against the PHP process's cwd: that's the project root under the dev server
+                        // and the CLI, but under Apache/mod_php it's typically public/ — silently pointing
+                        // at a nonexistent file (SQLSTATE[HY000] [14] unable to open database file).
+                        // Resolve against this file's own location instead, which is cwd-independent.
+                        if (!preg_match('#^([a-zA-Z]:[\\\\/]|/)#', $path)) {
+                            $path = dirname(__DIR__) . '/' . $path;
+                        }
+                        $dsn = 'sqlite:' . $path;
+                    }
 
                     self::$instance = new PDO($dsn, null, null, $options);
                     self::$instance->exec('PRAGMA foreign_keys = ON');
