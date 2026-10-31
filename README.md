@@ -156,23 +156,34 @@ $app->post("/license", AuthMiddleware::class, function($req) {
 ```
 
 ### 3. Auto-Wired Services (Dependency Injection)
-Create custom services in the `services/` directory. For example, `services/TranslateService.php`:
+Create custom services in the `services/` directory. Wisp's container supports **Type-Hinted Injection** (`PDO`, service classes, `App`), parameter names, and default values:
 ```php
 <?php
 
 class TranslateService {
-    private $db;
+    private PDO $db;
 
-    // Wisp automatically resolves and injects the registered 'db' service (PDO instance)!
-    public function __construct($db) {
+    // Auto-wired by type-hint (PDO) or parameter name ($db)!
+    public function __construct(PDO $db) {
         $this->db = $db;
     }
 
     public function translate(string $text): string {
-        // Query the database via $this->db
         return "Translated: " . strtoupper($text);
     }
 }
+```
+
+You can also bind services explicitly in `config/services.php`:
+```php
+// Singleton (cached instance)
+$app->singleton('mailer', fn() => new MailerService());
+
+// Transient (new instance on every resolve)
+$app->bind('uuid', fn() => new UuidGenerator());
+
+// Pre-existing instance
+$app->instance('config', ['debug' => true]);
 ```
 
 Call the service directly in your routes using `$env->{serviceName}`:
@@ -302,6 +313,22 @@ $app->post('/login', function() {
         ])
         ->withHeaders(['X-Logged-In' => 'true']);
 });
+```
+
+### 8. Database Transactions & Helpers
+Execute database operations safely using Wisp's built-in PDO transaction runner with automatic commit/rollback and nested savepoint support:
+```php
+// 1. Automatic Transaction Runner
+DB::transaction(function(PDO $pdo) {
+    DB::execute("UPDATE accounts SET balance = balance - 100 WHERE id = 1");
+    DB::execute("UPDATE accounts SET balance = balance + 100 WHERE id = 2");
+    // If any exception is thrown, changes are rolled back automatically!
+});
+
+// 2. Query convenience helpers
+$user = DB::first("SELECT * FROM users WHERE email = :email", ['email' => $email]);
+$totalUsers = DB::value("SELECT count(*) FROM users");
+$newId = DB::lastInsertId();
 ```
 
 ---

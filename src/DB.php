@@ -6,6 +6,7 @@ use PDO;
 class DB {
     private static ?PDO $instance = null;
     private static ?string $pluginClass = null;
+    private static int $transactionDepth = 0;
 
     public static function registerPlugin(string $className): void {
         self::$pluginClass = $className;
@@ -78,15 +79,97 @@ class DB {
         return self::$instance;
     }
 
+    public static function setConnection(?PDO $pdo): void {
+        self::$instance = $pdo;
+        self::$transactionDepth = 0;
+    }
+
+    public static function disconnect(): void {
+        self::$instance = null;
+        self::$transactionDepth = 0;
+    }
+
     public static function query(string $sql, array $params = []): array {
         $stmt = self::connect()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
     }
 
+    public static function first(string $sql, array $params = []): ?array {
+        $stmt = self::connect()->prepare($sql);
+        $stmt->execute($params);
+        $result = $stmt->fetch();
+        return is_array($result) ? $result : null;
+    }
+
+    public static function value(string $sql, array $params = [], int $column = 0) {
+        $stmt = self::connect()->prepare($sql);
+        $stmt->execute($params);
+        $val = $stmt->fetchColumn($column);
+        return ($val !== false) ? $val : null;
+    }
+
     public static function execute(string $sql, array $params = []): int {
         $stmt = self::connect()->prepare($sql);
         $stmt->execute($params);
         return $stmt->rowCount();
+    }
+
+    public static function lastInsertId(?string $name = null): string {
+        return self::connect()->lastInsertId($name);
+    }
+
+    // --- Transaction Management (with Nested Savepoint Support) ---
+
+    public static function beginTransaction(): void {
+        $pdo = self::connect();
+        if (self::$transactionDepth === 0) {
+            $pdo->beginTransaction();
+        } else {
+            $pdo->exec("SAVEPOINT wisp_trans_" . self::$transactionDepth);
+        }
+        self::$transactionDepth++;
+    }
+
+    public static function commit(): void {
+        if (self::$transactionDepth <= 0) {
+            throw new \PDOException("There is no active transaction to commit.");
+        }
+        self::$transactionDepth--;
+        $pdo = self::connect();
+        if (self::$transactionDepth === 0) {
+            $pdo->commit();
+        } else {
+            $pdo->exec("RELEASE SAVEPOINT wisp_trans_" . self::$transactionDepth);
+        }
+    }
+
+    public static function rollBack(): void {
+        if (self::$transactionDepth <= 0) {
+            throw new \PDOException("There is no active transaction to roll back.");
+        }
+        self::$transactionDepth--;
+        $pdo = self::connect();
+        if (self::$transactionDepth === 0) {
+            $pdo->rollBack();
+        } else {
+            $pdo->exec("ROLLBACK TO SAVEPOINT wisp_trans_" . self::$transactionDepth);
+        }
+    }
+
+    public static function inTransaction(): bool {
+        return self::$transactionDepth > 0;
+    }
+
+    public static function transaction(callable $callback) {
+        self::beginTransaction();
+        try {
+            $result = $callback(self::connect());
+            self::commit();
+            return $result;
+        } catch (\Throwable $e) {
+            self::rollBack();
+            throw $e;
+        }
     }
 }

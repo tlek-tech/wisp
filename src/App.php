@@ -5,6 +5,8 @@ class App {
     private array $routes = [];
     private array $middlewares = [];
     private array $services = [];
+    private array $factories = [];
+    private array $instances = [];
     private array $resolvedServices = [];
     private array $callbackResolvers = [];
     private $notFoundHandler;
@@ -69,17 +71,50 @@ class App {
 
     // --- Service Container Methods (with Auto-wiring) ---
 
-    public function set(string $name, callable $factory) {
+    public function set(string $name, callable $factory): self {
         $this->services[$name] = $factory;
+        return $this;
+    }
+
+    public function singleton(string $name, callable $factory): self {
+        $this->services[$name] = $factory;
+        return $this;
+    }
+
+    public function bind(string $name, callable $factory): self {
+        $this->factories[$name] = $factory;
+        return $this;
+    }
+
+    public function instance(string $name, $instance): self {
+        $this->instances[$name] = $instance;
+        return $this;
+    }
+
+    public function has(string $name): bool {
+        return isset($this->instances[$name]) ||
+               isset($this->resolvedServices[$name]) ||
+               isset($this->services[$name]) ||
+               isset($this->factories[$name]) ||
+               class_exists($name) ||
+               class_exists(ucfirst($name));
     }
 
     public function resolve(string $name) {
+        if (isset($this->instances[$name])) {
+            return $this->instances[$name];
+        }
+
+        if (isset($this->factories[$name])) {
+            return $this->factories[$name]($this);
+        }
+
         if (!isset($this->resolvedServices[$name])) {
             if (isset($this->services[$name])) {
                 $this->resolvedServices[$name] = $this->services[$name]($this);
             } else {
-                // Auto-wiring: Try to resolve class from services folder automatically
-                $className = ucfirst($name);
+                // Auto-wiring: Try to resolve class from services folder or full namespace
+                $className = class_exists($name) ? $name : ucfirst($name);
                 if (class_exists($className)) {
                     $this->resolvedServices[$name] = $this->autowire($className);
                 } else {
@@ -94,7 +129,11 @@ class App {
         return $this->resolve($name);
     }
 
-    private function autowire(string $className) {
+    public function make(string $className) {
+        return $this->autowire($className);
+    }
+
+    public function autowire(string $className) {
         $reflector = new \ReflectionClass($className);
         $constructor = $reflector->getConstructor();
 
@@ -107,15 +146,52 @@ class App {
 
         foreach ($parameters as $param) {
             $paramName = $param->getName();
-            try {
-                $dependencies[] = $this->resolve($paramName);
-            } catch (\Exception $e) {
-                if ($param->isDefaultValueAvailable()) {
-                    $dependencies[] = $param->getDefaultValue();
-                } else {
-                    throw new \Exception("Cannot auto-wire parameter '{$paramName}' for class '{$className}': " . $e->getMessage());
+            $type = $param->getType();
+            $resolved = null;
+
+            // 1. Try resolving via Type-Hint
+            if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
+                $typeClass = $type->getName();
+
+                if ($typeClass === self::class || $typeClass === 'Wisp\App') {
+                    $resolved = $this;
+                } elseif (isset($this->instances[$typeClass])) {
+                    $resolved = $this->instances[$typeClass];
+                } elseif ($typeClass === \PDO::class) {
+                    if (isset($this->instances['db'])) {
+                        $resolved = $this->instances['db'];
+                    } elseif (isset($this->services['db']) || isset($this->resolvedServices['db'])) {
+                        $resolved = $this->resolve('db');
+                    } else {
+                        $resolved = DB::connect();
+                    }
+                } elseif ($this->has($typeClass)) {
+                    try {
+                        $resolved = $this->resolve($typeClass);
+                    } catch (\Exception $e) {}
+                } elseif (class_exists($typeClass)) {
+                    try {
+                        $resolved = $this->autowire($typeClass);
+                    } catch (\Exception $e) {}
                 }
             }
+
+            // 2. Fall back to resolving by parameter name
+            if ($resolved === null) {
+                try {
+                    $resolved = $this->resolve($paramName);
+                } catch (\Exception $e) {
+                    if ($param->isDefaultValueAvailable()) {
+                        $resolved = $param->getDefaultValue();
+                    } elseif ($type && $type->allowsNull()) {
+                        $resolved = null;
+                    } else {
+                        throw new \Exception("Cannot auto-wire parameter '{$paramName}' for class '{$className}': " . $e->getMessage());
+                    }
+                }
+            }
+
+            $dependencies[] = $resolved;
         }
 
         return $reflector->newInstanceArgs($dependencies);
