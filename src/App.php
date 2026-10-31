@@ -8,10 +8,33 @@ class App {
     private array $resolvedServices = [];
     private array $callbackResolvers = [];
     private $notFoundHandler;
+    private $errorHandler = null;
 
     public function __construct() {
         $this->notFoundHandler = function(Request $req) {
-            return Response::json(['error' => 'Not Found'], 404);
+            $debug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
+            $accept = $req->header('Accept') ?? '';
+            $isJson = (strpos($req->path, '/api/') === 0) || (strpos($accept, 'application/json') !== false);
+
+            if ($debug) {
+                $availableRoutes = array_map(function($r) {
+                    return "{$r['method']} {$r['path']}";
+                }, $this->routes);
+
+                if ($isJson) {
+                    return Response::json([
+                        'error' => 'Not Found',
+                        'message' => "Route [{$req->method}] {$req->path} not found.",
+                        'available_routes' => $availableRoutes,
+                    ], 404);
+                }
+
+                return Response::html($this->renderNotFoundHtml($req, $availableRoutes), 404);
+            }
+
+            return $isJson
+                ? Response::json(['error' => 'Not Found'], 404)
+                : Response::text('Not Found', 404);
         };
     }
 
@@ -116,8 +139,22 @@ class App {
         $this->addRoute('*', $path, $handlers);
     }
 
-    public function setNotFound(callable $callback) {
+    public function setNotFound(callable $callback): self {
         $this->notFoundHandler = $callback;
+        return $this;
+    }
+
+    public function onError(callable $handler): self {
+        $this->errorHandler = $handler;
+        return $this;
+    }
+
+    public function getRoutes(): array {
+        return $this->routes;
+    }
+
+    public function getMiddlewares(): array {
+        return $this->middlewares;
     }
 
     private function addRoute(string $method, string $path, array $handlers) {
@@ -175,12 +212,27 @@ class App {
                 return;
             }
             http_response_code(500);
-            if (strpos($_SERVER['REQUEST_URI'] ?? '', '/api/') !== false) {
+            $debug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
+            $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+            $isJson = (strpos($_SERVER['REQUEST_URI'] ?? '', '/api/') !== false) || (strpos($accept, 'application/json') !== false);
+
+            if ($isJson) {
                 header('Content-Type: application/json; charset=utf-8');
-                echo json_encode(['error' => 'Internal Server Error']);
+                $payload = ['error' => 'Internal Server Error'];
+                if ($debug) {
+                    $payload['message'] = $error['message'];
+                    $payload['file'] = $error['file'];
+                    $payload['line'] = $error['line'];
+                    $payload['type'] = $error['type'];
+                }
+                echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
             } else {
-                header('Content-Type: text/plain; charset=utf-8');
-                echo 'Internal Server Error';
+                header('Content-Type: text/html; charset=utf-8');
+                if ($debug) {
+                    echo $this->renderFatalDebugHtml($error);
+                } else {
+                    echo 'Internal Server Error';
+                }
             }
         });
     }
@@ -214,25 +266,31 @@ class App {
                 $corsOrigin = $requestOrigin;
             }
 
-            header("Access-Control-Allow-Origin: $corsOrigin");
-            header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS");
-            header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-            if ($allowCredentials) {
-                header("Access-Control-Allow-Credentials: true");
+            if (!headers_sent()) {
+                header("Access-Control-Allow-Origin: $corsOrigin");
+                header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS");
+                header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+                if ($allowCredentials) {
+                    header("Access-Control-Allow-Credentials: true");
+                }
             }
         }
 
         if ($request->method === 'OPTIONS') {
-            http_response_code(204);
+            if (!headers_sent()) {
+                http_response_code(204);
+            }
             exit;
         }
 
         // Baseline security headers for every response.
-        header("X-Content-Type-Options: nosniff");
-        header("X-Frame-Options: DENY");
-        header("Referrer-Policy: no-referrer");
-        if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-            header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+        if (!headers_sent()) {
+            header("X-Content-Type-Options: nosniff");
+            header("X-Frame-Options: DENY");
+            header("Referrer-Policy: no-referrer");
+            if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+                header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+            }
         }
 
         $handlers = [];
@@ -299,10 +357,24 @@ class App {
             // Discard whatever a warning-turned-exception (or the route itself) may have
             // already echoed before throwing, so the client only ever sees the clean error
             // below instead of a mix of stray output + error body.
-            ob_clean();
-            $response = (strpos($request->path, '/api/') === 0)
-                ? Response::json(['error' => 'Internal Server Error'], 500)
-                : Response::text('Internal Server Error', 500);
+            if (ob_get_level() > 0) {
+                ob_clean();
+            }
+
+            $response = null;
+
+            if ($this->errorHandler !== null) {
+                try {
+                    $response = call_user_func($this->errorHandler, $e, $request, $this);
+                } catch (\Throwable $handlerEx) {
+                    error_log('[Wisp\App] Error in custom errorHandler: ' . $handlerEx->getMessage());
+                    $e = $handlerEx;
+                }
+            }
+
+            if ($response === null) {
+                $response = $this->handleDefaultError($e, $request);
+            }
         }
 
         if ($response instanceof Response) {
@@ -400,5 +472,410 @@ class App {
         }
 
         return false;
+    }
+
+    // --- Error Rendering & Debugging Helpers ---
+
+    private function handleDefaultError(\Throwable $e, Request $request): Response {
+        $debug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
+        $accept = $request->header('Accept') ?? '';
+        $isJson = (strpos($request->path, '/api/') === 0) || (strpos($accept, 'application/json') !== false);
+
+        $code = (int)$e->getCode();
+        $status = ($code >= 400 && $code <= 599) ? $code : 500;
+
+        if ($debug) {
+            if ($isJson) {
+                return Response::json([
+                    'error' => ($status === 500) ? 'Internal Server Error' : ($e->getMessage() ?: 'Error'),
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                    'trace' => explode("\n", $e->getTraceAsString()),
+                ], $status);
+            }
+
+            return Response::html($this->renderDebugHtml($e, $request), $status);
+        }
+
+        return $isJson
+            ? Response::json(['error' => 'Internal Server Error'], $status)
+            : Response::text('Internal Server Error', $status);
+    }
+
+    private function renderDebugHtml(\Throwable $e, Request $request): string {
+        $class = get_class($e);
+        $message = $e->getMessage();
+        $file = $e->getFile();
+        $line = $e->getLine();
+        $code = (int)$e->getCode();
+        $status = ($code >= 400 && $code <= 599) ? $code : 500;
+
+        $snippetHtml = $this->renderCodeSnippetHtml($file, $line);
+        $traceHtml = $this->renderTraceHtml($e);
+        $requestHtml = $this->renderRequestContextHtml($request);
+
+        return $this->buildErrorPage(
+            $status,
+            $class,
+            $message,
+            $file,
+            $line,
+            $snippetHtml . $traceHtml . $requestHtml
+        );
+    }
+
+    private function renderFatalDebugHtml(array $error): string {
+        $message = $error['message'] ?? 'Unknown fatal error';
+        $file = $error['file'] ?? 'unknown';
+        $line = (int)($error['line'] ?? 0);
+        $snippetHtml = $this->renderCodeSnippetHtml($file, $line);
+
+        return $this->buildErrorPage(
+            500,
+            'Fatal Error',
+            $message,
+            $file,
+            $line,
+            $snippetHtml
+        );
+    }
+
+    private function renderNotFoundHtml(Request $req, array $availableRoutes): string {
+        $method = htmlspecialchars($req->method, ENT_QUOTES, 'UTF-8');
+        $path = htmlspecialchars($req->path, ENT_QUOTES, 'UTF-8');
+
+        $routesList = '';
+        if (!empty($availableRoutes)) {
+            $routesList .= '<div class="section-card">';
+            $routesList .= '<div class="section-header">Available Routes (' . count($availableRoutes) . ')</div>';
+            $routesList .= '<div class="routes-grid">';
+            foreach ($availableRoutes as $r) {
+                $parts = explode(' ', $r, 2);
+                $m = htmlspecialchars($parts[0] ?? 'ANY', ENT_QUOTES, 'UTF-8');
+                $p = htmlspecialchars($parts[1] ?? '', ENT_QUOTES, 'UTF-8');
+                $mClass = strtolower(str_replace('*', 'any', $m));
+                $routesList .= "<div class=\"route-item\"><span class=\"method-badge method-{$mClass}\">{$m}</span><span class=\"route-path\">{$p}</span></div>";
+            }
+            $routesList .= '</div></div>';
+        }
+
+        return $this->buildErrorPage(
+            404,
+            '404 Not Found',
+            "No route found matching [{$method}] {$path}",
+            'Router',
+            0,
+            $routesList
+        );
+    }
+
+    private function buildErrorPage(int $status, string $title, string $message, string $file, int $line, string $body): string {
+        $metaHtml = '';
+        if ($file !== '' && $file !== 'Router') {
+            $metaHtml = '<div class="error-meta">in <strong>' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '</strong> on line <strong>' . $line . '</strong></div>';
+        } elseif ($file === 'Router') {
+            $metaHtml = '<div class="error-meta">Check your routes configuration in <strong>routes/</strong></div>';
+        }
+
+        $titleEscaped = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
+        $messageEscaped = nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8'));
+
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wisp Debug - {$titleEscaped}</title>
+    <style>
+        :root {
+            --bg: #090d16;
+            --surface: #111827;
+            --border: #1f293d;
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #64748b;
+            --danger: #ef4444;
+            --danger-bg: rgba(239, 68, 68, 0.15);
+            --danger-border: #dc2626;
+            --brand: #38bdf8;
+            --brand-bg: rgba(56, 189, 248, 0.12);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+            padding: 2.5rem 1rem;
+        }
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        .header-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 9999px;
+            font-size: 0.8125rem;
+            font-weight: 600;
+        }
+        .badge-brand { background: var(--brand-bg); color: var(--brand); border: 1px solid rgba(56, 189, 248, 0.3); }
+        .badge-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
+        .hero {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--danger);
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .exception-title {
+            color: var(--danger);
+            font-size: 0.875rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.4rem;
+        }
+        .error-message {
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.75rem;
+            word-break: break-word;
+        }
+        .error-meta {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-family: "JetBrains Mono", Consolas, monospace;
+        }
+        .error-meta strong { color: var(--text-primary); }
+        .section-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 0.75rem 1.25rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .code-snippet {
+            font-family: "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            overflow-x: auto;
+            background: #0d1117;
+            padding: 0.5rem 0;
+        }
+        .code-line {
+            display: flex;
+            padding: 0.1rem 1rem;
+        }
+        .code-line.highlight {
+            background: rgba(239, 68, 68, 0.2);
+            border-left: 4px solid var(--danger);
+            padding-left: calc(1rem - 4px);
+        }
+        .line-num {
+            width: 3.5rem;
+            flex-shrink: 0;
+            color: var(--text-muted);
+            user-select: none;
+            text-align: right;
+            padding-right: 1.25rem;
+        }
+        .line-code {
+            color: #e6edf3;
+            white-space: pre;
+        }
+        .trace-item {
+            padding: 0.75rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.875rem;
+        }
+        .trace-item:last-child { border-bottom: none; }
+        .trace-call {
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-weight: 600;
+            color: var(--brand);
+            margin-bottom: 0.25rem;
+        }
+        .trace-location {
+            color: var(--text-muted);
+            font-size: 0.8125rem;
+            font-family: "JetBrains Mono", Consolas, monospace;
+        }
+        .table-data {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        .table-data th, .table-data td {
+            padding: 0.6rem 1.25rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .table-data th { color: var(--text-muted); font-weight: 500; width: 30%; }
+        .table-data td { font-family: "JetBrains Mono", Consolas, monospace; color: var(--text-primary); word-break: break-all; }
+        .table-data tr:last-child td { border-bottom: none; }
+        .routes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 0.5rem;
+            padding: 1rem 1.25rem;
+        }
+        .route-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 0.8125rem;
+        }
+        .method-badge {
+            font-weight: 700;
+            font-size: 0.75rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: 0.25rem;
+        }
+        .method-get { background: #065f46; color: #34d399; }
+        .method-post { background: #1e40af; color: #60a5fa; }
+        .method-put, .method-patch { background: #854d0e; color: #facc15; }
+        .method-delete { background: #991b1b; color: #f87171; }
+        .method-any { background: #374151; color: #d1d5db; }
+        .route-path { color: var(--text-primary); word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-bar">
+            <span class="badge badge-brand">🌬️ Wisp Debug</span>
+            <span class="badge badge-danger">HTTP {$status}</span>
+        </div>
+        <div class="hero">
+            <div class="exception-title">{$titleEscaped}</div>
+            <div class="error-message">{$messageEscaped}</div>
+            {$metaHtml}
+        </div>
+        {$body}
+    </div>
+</body>
+</html>
+HTML;
+    }
+
+    private function renderCodeSnippetHtml(string $file, int $line): string {
+        $snippet = $this->getCodeSnippet($file, $line, 5);
+        if ($snippet === null || empty($snippet)) {
+            return '';
+        }
+
+        $html = '<div class="section-card">';
+        $html .= '<div class="section-header">Source &mdash; ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . ':' . $line . '</div>';
+        $html .= '<div class="code-snippet">';
+        foreach ($snippet as $num => $code) {
+            $isHighlight = ($num === $line);
+            $hlClass = $isHighlight ? ' highlight' : '';
+            $lineCode = htmlspecialchars(rtrim($code, "\r\n"), ENT_QUOTES, 'UTF-8');
+            if ($lineCode === '') {
+                $lineCode = '&nbsp;';
+            }
+            $html .= "<div class=\"code-line{$hlClass}\">";
+            $html .= "<span class=\"line-num\">{$num}</span>";
+            $html .= "<span class=\"line-code\">{$lineCode}</span>";
+            $html .= "</div>";
+        }
+        $html .= '</div></div>';
+        return $html;
+    }
+
+    private function getCodeSnippet(string $file, int $line, int $padding = 5): ?array {
+        if (!file_exists($file) || !is_readable($file)) {
+            return null;
+        }
+        $lines = @file($file);
+        if ($lines === false) {
+            return null;
+        }
+        $start = max(1, $line - $padding);
+        $end = min(count($lines), $line + $padding);
+        $snippet = [];
+        for ($i = $start; $i <= $end; $i++) {
+            $snippet[$i] = $lines[$i - 1];
+        }
+        return $snippet;
+    }
+
+    private function renderTraceHtml(\Throwable $e): string {
+        $trace = $e->getTrace();
+        if (empty($trace)) {
+            return '';
+        }
+
+        $html = '<div class="section-card">';
+        $html .= '<div class="section-header">Stack Trace (' . count($trace) . ' frames)</div>';
+        foreach ($trace as $i => $frame) {
+            $class = $frame['class'] ?? '';
+            $type = $frame['type'] ?? '';
+            $func = $frame['function'] ?? '';
+            $call = htmlspecialchars($class . $type . $func . '()', ENT_QUOTES, 'UTF-8');
+            $file = isset($frame['file']) ? htmlspecialchars($frame['file'], ENT_QUOTES, 'UTF-8') : '[internal function]';
+            $line = isset($frame['line']) ? ':' . $frame['line'] : '';
+
+            $html .= '<div class="trace-item">';
+            $html .= "<div class=\"trace-call\">#{$i} {$call}</div>";
+            $html .= "<div class=\"trace-location\">{$file}{$line}</div>";
+            $html .= '</div>';
+        }
+        $html .= '</div>';
+        return $html;
+    }
+
+    private function renderRequestContextHtml(Request $request): string {
+        $html = '<div class="section-card">';
+        $html .= '<div class="section-header">Request Context</div>';
+        $html .= '<table class="table-data">';
+        $html .= '<tr><th>Method</th><td>' . htmlspecialchars($request->method, ENT_QUOTES, 'UTF-8') . '</td></tr>';
+        $html .= '<tr><th>Path</th><td>' . htmlspecialchars($request->path, ENT_QUOTES, 'UTF-8') . '</td></tr>';
+        $html .= '<tr><th>URL</th><td>' . htmlspecialchars($request->url, ENT_QUOTES, 'UTF-8') . '</td></tr>';
+        $html .= '<tr><th>PHP Version</th><td>' . PHP_VERSION . '</td></tr>';
+        $html .= '</table></div>';
+
+        if (!empty($request->headers)) {
+            $html .= '<div class="section-card">';
+            $html .= '<div class="section-header">Request Headers</div>';
+            $html .= '<table class="table-data">';
+            foreach ($request->headers as $k => $v) {
+                $val = (stripos($k, 'authorization') !== false || stripos($k, 'cookie') !== false)
+                    ? substr($v, 0, 10) . '... [redacted]'
+                    : $v;
+                $html .= '<tr><th>' . htmlspecialchars($k, ENT_QUOTES, 'UTF-8') . '</th><td>' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '</td></tr>';
+            }
+            $html .= '</table></div>';
+        }
+
+        return $html;
     }
 }

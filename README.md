@@ -186,6 +186,30 @@ $app->get("/translate", function($req, $env) {
 });
 ```
 
+### 4. Error Handling & Debug Mode
+Wisp includes comprehensive developer error diagnostics controlled by `APP_DEBUG` in `.env`:
+
+- **Debug Mode (`APP_DEBUG=true`)**:
+  - API / JSON requests: Returns full diagnostic details including `exception`, `message`, `file`, `line`, and `trace`.
+  - Browser / HTML requests: Renders a sleek, zero-dependency dark-mode error page with source snippet preview (highlighting the exact error line) and full stack trace.
+  - Route 404: Returns the missing method/path along with a list of all currently registered routes for easy troubleshooting.
+- **Production Mode (`APP_DEBUG=false`)**:
+  - Automatically suppresses sensitive server paths, credentials, and stack traces, returning clean standard errors (`{"error": "Internal Server Error"}`).
+
+You can also register a custom global exception handler using `$app->onError()`:
+```php
+$app->onError(function (\Throwable $e, Request $req) {
+    if ($e instanceof InvalidArgumentException) {
+        return Response::json([
+            'error' => 'Validation Error',
+            'message' => $e->getMessage()
+        ], 422);
+    }
+    // Return null to fall back to Wisp's default error handling
+    return null;
+});
+```
+
 ---
 
 ## Plugins
