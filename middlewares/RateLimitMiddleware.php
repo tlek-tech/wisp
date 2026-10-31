@@ -15,7 +15,7 @@ class RateLimitMiddleware {
     }
 
     public function handle($req, $next, $env) {
-        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $ip = $req->ip();
         // ":" (present in every IPv6 address, e.g. "::1" for loopback) is invalid in Windows
         // filenames, so it can't be left in the allowed set here even though it's harmless on
         // Linux/macOS — otherwise every IPv6 client 500s on Windows via a fopen() error instead

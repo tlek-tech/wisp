@@ -9,6 +9,9 @@ class Request {
     public array $query = [];
     public array $params = [];
     private ?string $rawBody = null;
+    private ?array $parsedJson = null;
+    private array $simulatedCookies = [];
+    private array $simulatedFiles = [];
     private array $attributes = [];
     private static array $macros = [];
 
@@ -44,7 +47,15 @@ class Request {
         }
     }
 
-    public static function create(string $method, string $uri, array $query = [], array $headers = [], ?string $body = null): self {
+    public static function create(
+        string $method,
+        string $uri,
+        array $query = [],
+        array $headers = [],
+        ?string $body = null,
+        array $cookies = [],
+        array $files = []
+    ): self {
         $req = new self();
         $req->method = strtoupper($method);
         $req->url = $uri;
@@ -52,18 +63,140 @@ class Request {
         $req->query = $query;
         $req->headers = $headers;
         $req->rawBody = $body ?? '';
+        $req->simulatedCookies = $cookies;
+        $req->simulatedFiles = $files;
         return $req;
     }
 
     public function body(): string {
         if ($this->rawBody === null) {
-            $this->rawBody = file_get_contents('php://input');
+            $this->rawBody = file_get_contents('php://input') ?: '';
         }
         return $this->rawBody;
     }
 
     public function json() {
-        return json_decode($this->body(), true);
+        if ($this->parsedJson === null) {
+            $raw = $this->body();
+            if ($raw === '' || $raw === null) {
+                $this->parsedJson = [];
+            } else {
+                $decoded = json_decode($raw, true);
+                $this->parsedJson = is_array($decoded) ? $decoded : [];
+            }
+        }
+        return $this->parsedJson;
+    }
+
+    public function all(): array {
+        $json = $this->json();
+        $post = $_POST ?? [];
+        return array_merge($this->query, $post, is_array($json) ? $json : []);
+    }
+
+    public function input(?string $key = null, $default = null) {
+        if ($key === null) {
+            return $this->all();
+        }
+        $all = $this->all();
+        return $all[$key] ?? $default;
+    }
+
+    public function has(string $key): bool {
+        $all = $this->all();
+        return array_key_exists($key, $all);
+    }
+
+    public function only(array $keys): array {
+        $all = $this->all();
+        $result = [];
+        foreach ($keys as $k) {
+            if (array_key_exists($k, $all)) {
+                $result[$k] = $all[$k];
+            }
+        }
+        return $result;
+    }
+
+    public function except(array $keys): array {
+        $all = $this->all();
+        foreach ($keys as $k) {
+            unset($all[$k]);
+        }
+        return $all;
+    }
+
+    public function bearerToken(): ?string {
+        $header = $this->header('Authorization');
+        if ($header === null) {
+            return null;
+        }
+        if (preg_match('/^\s*Bearer\s+(.+)$/i', $header, $matches)) {
+            return trim($matches[1]);
+        }
+        return null;
+    }
+
+    public function ip(): string {
+        $cfIp = $this->header('CF-Connecting-IP');
+        if ($cfIp !== null && filter_var(trim($cfIp), FILTER_VALIDATE_IP)) {
+            return trim($cfIp);
+        }
+
+        $xff = $this->header('X-Forwarded-For');
+        if ($xff !== null) {
+            $ips = explode(',', $xff);
+            $clientIp = trim($ips[0]);
+            if (filter_var($clientIp, FILTER_VALIDATE_IP)) {
+                return $clientIp;
+            }
+        }
+
+        $realIp = $this->header('X-Real-IP');
+        if ($realIp !== null && filter_var(trim($realIp), FILTER_VALIDATE_IP)) {
+            return trim($realIp);
+        }
+
+        return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+    }
+
+    public function cookie(string $name, $default = null): ?string {
+        if (isset($this->simulatedCookies[$name])) {
+            return (string)$this->simulatedCookies[$name];
+        }
+
+        if (isset($_COOKIE[$name])) {
+            return (string)$_COOKIE[$name];
+        }
+
+        $cookieHeader = $this->header('Cookie');
+        if ($cookieHeader !== null) {
+            $parts = explode(';', $cookieHeader);
+            foreach ($parts as $part) {
+                $pair = explode('=', trim($part), 2);
+                if (count($pair) === 2 && trim($pair[0]) === $name) {
+                    return urldecode(trim($pair[1]));
+                }
+            }
+        }
+
+        return $default;
+    }
+
+    public function file(string $name) {
+        if (isset($this->simulatedFiles[$name])) {
+            return $this->simulatedFiles[$name];
+        }
+        return $_FILES[$name] ?? null;
+    }
+
+    public function files(): array {
+        return !empty($this->simulatedFiles) ? $this->simulatedFiles : ($_FILES ?? []);
+    }
+
+    public function hasFile(string $name): bool {
+        $file = $this->file($name);
+        return is_array($file) && isset($file['error']) && $file['error'] !== UPLOAD_ERR_NO_FILE;
     }
 
     public function header(string $name): ?string {

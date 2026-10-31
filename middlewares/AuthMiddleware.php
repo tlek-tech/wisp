@@ -3,9 +3,9 @@
 class AuthMiddleware {
     public function handle($req, $next, $env) {
         $secret = $_ENV['API_SECRET_KEY'] ?? '';
-        $auth = $req->header('Authorization') ?? '';
+        $token = $req->bearerToken();
 
-        if ($secret === '' || !hash_equals('Bearer ' . $secret, $auth)) {
+        if ($secret === '' || $token === null || !hash_equals($secret, $token)) {
             return Response::json([
                 'error' => 'Unauthorized'
             ], 401);

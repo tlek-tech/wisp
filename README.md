@@ -252,6 +252,58 @@ assert($res->status === 200);
 assert($res->json['message'] === 'pong');
 ```
 
+### 7. HTTP Request & Response Helpers
+Wisp provides convenient developer helpers on both `Request` and `Response`:
+
+#### Request Helpers:
+```php
+$app->post('/api/profile', function($req) {
+    // 1. Unified inputs (checks JSON body, POST form-data, and query params)
+    $username = $req->input('username', 'Anonymous');
+    $all = $req->all();
+    $data = $req->only(['username', 'email']);
+    $safe = $req->except(['password']);
+
+    // 2. Authentication token extraction
+    $token = $req->bearerToken(); // extracts from 'Authorization: Bearer <token>'
+
+    // 3. Client IP (handles Cloudflare CF-Connecting-IP, X-Forwarded-For, and REMOTE_ADDR)
+    $ip = $req->ip();
+
+    // 4. Cookies & file uploads
+    $cookie = $req->cookie('session_id');
+    $avatar = $req->file('avatar');
+
+    return Response::json(['username' => $username, 'client_ip' => $ip]);
+});
+```
+
+#### Response Helpers:
+```php
+// 1. Serve static file with automatic MIME-type detection
+$app->get('/images/logo.png', function() {
+    return Response::file(__DIR__ . '/../storage/logo.png');
+});
+
+// 2. Force download attachment
+$app->get('/invoices/:id/download', function($req) {
+    return Response::download(__DIR__ . '/../storage/invoice.pdf', 'my-invoice.pdf');
+});
+
+// 3. Cookies and fluent status/headers
+$app->post('/login', function() {
+    return Response::json(['success' => true])
+        ->status(200)
+        ->setCookie('auth_token', 'jwt_xyz', [
+            'max_age' => 86400,
+            'httponly' => true,
+            'secure' => true,
+            'samesite' => 'Strict'
+        ])
+        ->withHeaders(['X-Logged-In' => 'true']);
+});
+```
+
 ---
 
 ## Plugins
