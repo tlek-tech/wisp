@@ -289,6 +289,11 @@ class App {
         return $this;
     }
 
+    public function command(string $name, callable $handler, string $description = ''): self {
+        Console::register($name, $handler, $description);
+        return $this;
+    }
+
     public function getRoutes(): array {
         return $this->routes;
     }

@@ -331,6 +331,33 @@ $totalUsers = DB::value("SELECT count(*) FROM users");
 $newId = DB::lastInsertId();
 ```
 
+### 9. Wisp CLI Tooling
+Wisp includes a zero-dependency CLI tool accessible via `php wisp` (or `wisp` on Windows):
+
+```bash
+# List all registered HTTP routes in an ASCII table
+php wisp route:list
+
+# Start the local PHP development server
+php wisp serve --host=127.0.0.1 --port=8000
+
+# Scaffold classes with auto-wired boilerplate
+php wisp make:service PaymentService
+php wisp make:middleware CheckRoleMiddleware
+php wisp make:route products
+
+# Generate a secure 32-byte API secret key and write to .env
+php wisp env:key
+```
+
+You can also register custom commands in your app or plugins via `$app->command()`:
+```php
+$app->command('backup:db', function($args) {
+    echo "Backing up database...\n";
+    return 0;
+}, 'Backup database records');
+```
+
 ---
 
 ## Plugins
