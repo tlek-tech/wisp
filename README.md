@@ -208,8 +208,10 @@ No manifest or dependency system exists yet — installing a plugin is just copy
 `plugins/<name>/` folder into your project and setting any `.env` values it documents.
 
 **Official plugins:**
-- [wisp-jwt](../wisp-jwt) — HS256 JWT auth (`JwtMiddleware`, `\Wisp\Jwt`, `$req->user()`)
-- [wisp-db-builder](../wisp-db-builder) — fluent query builder for `DB::table()`
+- [wisp-jwt](https://github.com/tlek-tech/wisp-jwt) — HS256 JWT auth (`JwtMiddleware`, `\Wisp\Jwt`, `$req->user()`)
+- [wisp-db-builder](https://github.com/tlek-tech/wisp-db-builder) — fluent query builder for `DB::table()`
+- [wisp-migration](https://github.com/tlek-tech/wisp-migration) — database migrations and CLI runner (`wisp migrate`, `\Wisp\Migrator`)
+- [wisp-mvc](https://github.com/tlek-tech/wisp-mvc) — MVC architecture with Controllers, Models (Active Record), and Blade-style Views
 
 ---
 
