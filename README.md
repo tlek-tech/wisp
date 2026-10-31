@@ -10,10 +10,13 @@ It features an **onion-style middleware pipeline**, a **reflective auto-wiring D
 ## Key Features
 
 - ⚡ **Workers Style Syntax**: Route requests using `$app->get()`, `$app->post()`, and return standard `Response` objects.
+- 📦 **Route Groups**: Group endpoints with shared prefixes and middlewares (`$app->group('/api/v1', ...)`), with full nesting support.
+- 🧪 **Pure In-Memory Testing**: Test your routes without running a web server via `$app->handle(Request::create(...))`.
+- 🚦 **RFC 405 Method Not Allowed**: Automatically distinguishes between 404 (route missing) and 405 (method disallowed) with accurate `Allow` headers.
 - 🧅 **Onion Middleware**: Supports global, path-prefix (wildcard), inline, and route-specific middleware pipelines.
 - 🧬 **Reflective Auto-Wiring**: Simply put your classes in the `services/` directory, and Wisp will automatically resolve constructor dependencies and instantiate them on demand.
 - ⚙️ **Decoupled Configs**: Keep `public/index.php` pristine by separating global configurations into `config/`.
-- 📁 **Clean URLs**: Front controller setup with rewrite rules for Apache/XAMPP (`.htaccess`) and built-in routing for local PHP dev server.
+- 📁 **Clean URLs & Wildcards**: Front controller setup with rewrite rules for Apache/XAMPP (`.htaccess`), named parameters (`:id`), and wildcard catch-all segments (`*path`).
 - 🛠️ **Zero Dependency Fallback**: Works instantly using a robust fallback autoloader and `.env` parser if Composer is not yet installed.
 - 🌐 **Shared Hosting Friendly**: Designed to run seamlessly on standard Apache/Nginx shared hosting environments using standard `.htaccess` URL rewriting—no terminal access or Composer execution required on the production server.
 
@@ -208,6 +211,45 @@ $app->onError(function (\Throwable $e, Request $req) {
     // Return null to fall back to Wisp's default error handling
     return null;
 });
+```
+
+### 5. Route Groups & Wildcards
+Organize your API endpoints with route prefixes, nested groups, and shared middlewares:
+```php
+$app->group('/api/v1', AuthMiddleware::class, function($app) {
+    $app->get('/users', function($req) {
+        return Response::json(['users' => []]);
+    });
+
+    // Nested groups
+    $app->group('/admin', AdminMiddleware::class, function($app) {
+        $app->get('/stats', function() {
+            return Response::json(['active_users' => 120]);
+        });
+    });
+});
+
+// Wildcard catch-all route (e.g. static assets or file download)
+$app->get('/files/*filepath', function($req) {
+    $path = $req->params['filepath']; // e.g. "images/avatar.png"
+    return Response::text("Requested file: " . $path);
+});
+```
+
+### 6. In-Memory Unit Testing
+Wisp separates request execution (`$app->handle()`) from output emission (`$app->run()`), making automated testing effortless:
+```php
+$app = new Wisp\App();
+$app->get('/ping', function() {
+    return Response::json(['message' => 'pong']);
+});
+
+// Execute in-memory without starting a web server or triggering exit/header:
+$req = Request::create('GET', '/ping');
+$res = $app->handle($req);
+
+assert($res->status === 200);
+assert($res->json['message'] === 'pong');
 ```
 
 ---

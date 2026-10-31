@@ -44,6 +44,17 @@ class Request {
         }
     }
 
+    public static function create(string $method, string $uri, array $query = [], array $headers = [], ?string $body = null): self {
+        $req = new self();
+        $req->method = strtoupper($method);
+        $req->url = $uri;
+        $req->path = parse_url($uri, PHP_URL_PATH) ?: '/';
+        $req->query = $query;
+        $req->headers = $headers;
+        $req->rawBody = $body ?? '';
+        return $req;
+    }
+
     public function body(): string {
         if ($this->rawBody === null) {
             $this->rawBody = file_get_contents('php://input');

@@ -26,6 +26,34 @@ class Response {
         return null;
     }
 
+    public function getStatus(): int {
+        return $this->status;
+    }
+
+    public function getBody() {
+        return $this->body;
+    }
+
+    public function getHeaders(): array {
+        return $this->headers;
+    }
+
+    public function getJson() {
+        return json_decode((string)$this->body, true);
+    }
+
+    public function __get(string $name) {
+        if ($name === 'status') return $this->status;
+        if ($name === 'body') return $this->body;
+        if ($name === 'headers') return $this->headers;
+        if ($name === 'json') return $this->getJson();
+        return null;
+    }
+
+    public static function noContent(int $status = 204, array $headers = []): Response {
+        return new self('', $status, $headers);
+    }
+
     public static function json($data, int $status = 200, array $headers = []): Response {
         $headers['Content-Type'] = 'application/json; charset=utf-8';
         $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);

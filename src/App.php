@@ -8,20 +8,23 @@ class App {
     private array $resolvedServices = [];
     private array $callbackResolvers = [];
     private $notFoundHandler;
+    private $methodNotAllowedHandler;
     private $errorHandler = null;
+    private string $currentGroupPrefix = '';
+    private array $currentGroupMiddlewares = [];
 
     public function __construct() {
         $this->notFoundHandler = function(Request $req) {
             $debug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
             $accept = $req->header('Accept') ?? '';
-            $isJson = (strpos($req->path, '/api/') === 0) || (strpos($accept, 'application/json') !== false);
+            $isHtml = (strpos($accept, 'text/html') !== false) && (strpos($accept, 'application/json') === false) && (strpos($req->path, '/api/') !== 0);
 
             if ($debug) {
                 $availableRoutes = array_map(function($r) {
                     return "{$r['method']} {$r['path']}";
                 }, $this->routes);
 
-                if ($isJson) {
+                if (!$isHtml) {
                     return Response::json([
                         'error' => 'Not Found',
                         'message' => "Route [{$req->method}] {$req->path} not found.",
@@ -32,9 +35,31 @@ class App {
                 return Response::html($this->renderNotFoundHtml($req, $availableRoutes), 404);
             }
 
-            return $isJson
+            return !$isHtml
                 ? Response::json(['error' => 'Not Found'], 404)
                 : Response::text('Not Found', 404);
+        };
+
+        $this->methodNotAllowedHandler = function(Request $req, array $allowedMethods) {
+            $allowed = array_unique(array_merge($allowedMethods, ['OPTIONS']));
+            $methodsStr = implode(', ', $allowed);
+            $debug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
+            $accept = $req->header('Accept') ?? '';
+            $isHtml = (strpos($accept, 'text/html') !== false) && (strpos($accept, 'application/json') === false) && (strpos($req->path, '/api/') !== 0);
+            $headers = ['Allow' => $methodsStr];
+
+            if (!$isHtml) {
+                $data = [
+                    'error' => 'Method Not Allowed',
+                    'allowed_methods' => array_values($allowed),
+                ];
+                if ($debug) {
+                    $data['message'] = "Method [{$req->method}] is not allowed for route {$req->path}.";
+                }
+                return Response::json($data, 405, $headers);
+            }
+
+            return Response::text('Method Not Allowed', 405, $headers);
         };
     }
 
@@ -139,8 +164,47 @@ class App {
         $this->addRoute('*', $path, $handlers);
     }
 
+    public function group(string $prefix, ...$args): self {
+        $callback = array_pop($args);
+        if (!is_callable($callback)) {
+            throw new \InvalidArgumentException("Last argument of App::group() must be a callable.");
+        }
+
+        $groupMiddlewares = [];
+        foreach ($args as $arg) {
+            if (is_array($arg)) {
+                $groupMiddlewares = array_merge($groupMiddlewares, $arg);
+            } else {
+                $groupMiddlewares[] = $arg;
+            }
+        }
+
+        $prevPrefix = $this->currentGroupPrefix;
+        $prevMiddlewares = $this->currentGroupMiddlewares;
+
+        $normalizedPrefix = '/' . trim($prefix, '/');
+        if ($normalizedPrefix === '//' || $normalizedPrefix === '/') {
+            $normalizedPrefix = '';
+        }
+
+        $this->currentGroupPrefix = $prevPrefix . $normalizedPrefix;
+        $this->currentGroupMiddlewares = array_merge($prevMiddlewares, $groupMiddlewares);
+
+        call_user_func($callback, $this);
+
+        $this->currentGroupPrefix = $prevPrefix;
+        $this->currentGroupMiddlewares = $prevMiddlewares;
+
+        return $this;
+    }
+
     public function setNotFound(callable $callback): self {
         $this->notFoundHandler = $callback;
+        return $this;
+    }
+
+    public function setMethodNotAllowed(callable $callback): self {
+        $this->methodNotAllowedHandler = $callback;
         return $this;
     }
 
@@ -171,10 +235,27 @@ class App {
             }
         }
 
+        // Apply group prefix if active
+        if ($this->currentGroupPrefix !== '') {
+            $subPath = '/' . ltrim($path, '/');
+            if ($subPath === '//' || ($subPath === '/' && $this->currentGroupPrefix !== '')) {
+                $subPath = '';
+            }
+            $fullPath = $this->currentGroupPrefix . $subPath;
+            if ($fullPath === '') {
+                $fullPath = '/';
+            }
+        } else {
+            $fullPath = $path;
+        }
+
+        // Apply group middlewares before route-specific middlewares
+        $finalMiddlewares = array_merge($this->currentGroupMiddlewares, $routeMiddlewares);
+
         $this->routes[] = [
             'method' => $method,
-            'path' => $path,
-            'middlewares' => $routeMiddlewares,
+            'path' => $fullPath,
+            'middlewares' => $finalMiddlewares,
             'callback' => $callback
         ];
     }
@@ -237,60 +318,31 @@ class App {
         });
     }
 
-    public function run() {
-        $this->registerErrorHandling();
-        ob_start();
-        $request = new Request();
-
+    public function handle(Request $request): Response {
         // Process CORS.
-        // The Origin header is only ever sent by browsers making cross-origin requests;
-        // non-browser clients (curl, mobile apps, server-to-server calls) never send it
-        // and must not be rejected because of that — Origin is not an access-control
-        // mechanism against direct API callers, only a signal for browser requests.
         $allowedOrigin = $_ENV['ALLOWED_ORIGIN'] ?? '*';
         $requestOrigin = $request->header('Origin');
-        // Credentials (cookies/HTTP auth) must never be paired with a reflected
-        // wildcard origin — that lets any site read credentialed responses. Only
-        // send the header when explicitly opted into via env, and never alongside '*'.
         $allowCredentials = ($_ENV['CORS_ALLOW_CREDENTIALS'] ?? 'false') === 'true';
 
+        $corsOrigin = null;
         if ($requestOrigin) {
             if ($allowedOrigin === '*') {
                 $corsOrigin = $allowCredentials ? $requestOrigin : '*';
             } else {
                 $allowedOrigins = array_map('trim', explode(',', $allowedOrigin));
                 if (!in_array($requestOrigin, $allowedOrigins, true)) {
-                    Response::json(['error' => 'Forbidden: Invalid Origin'], 403)->send();
-                    exit;
+                    $forbidden = Response::json(['error' => 'Forbidden: Invalid Origin'], 403);
+                    $this->applySecurityAndCorsHeaders($forbidden, null, false);
+                    return $forbidden;
                 }
                 $corsOrigin = $requestOrigin;
-            }
-
-            if (!headers_sent()) {
-                header("Access-Control-Allow-Origin: $corsOrigin");
-                header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS");
-                header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-                if ($allowCredentials) {
-                    header("Access-Control-Allow-Credentials: true");
-                }
             }
         }
 
         if ($request->method === 'OPTIONS') {
-            if (!headers_sent()) {
-                http_response_code(204);
-            }
-            exit;
-        }
-
-        // Baseline security headers for every response.
-        if (!headers_sent()) {
-            header("X-Content-Type-Options: nosniff");
-            header("X-Frame-Options: DENY");
-            header("Referrer-Policy: no-referrer");
-            if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-                header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
-            }
+            $optionsRes = Response::noContent(204);
+            $this->applySecurityAndCorsHeaders($optionsRes, $corsOrigin, $allowCredentials);
+            return $optionsRes;
         }
 
         $handlers = [];
@@ -306,57 +358,73 @@ class App {
         }
 
         // 2. Match and add route-specific middlewares + final handler
-        $routeFound = false;
+        $matchedRoute = null;
+        $matchedParams = [];
+        $allowedMethods = [];
+
         foreach ($this->routes as $route) {
-            if ($route['method'] !== '*' && $route['method'] !== $request->method) {
-                continue;
-            }
-
-            $matched = $this->matchRoute($route['path'], $request->path, $params);
-            if ($matched) {
-                $request->params = $params;
-
-                // Add route-specific middlewares
-                foreach ($route['middlewares'] as $mw) {
-                    $handlers[] = function($req, $next) use ($mw) {
-                        $resolved = $this->resolveMiddleware($mw);
-                        return call_user_func($resolved, $req, $next, $this);
-                    };
+            $isPathMatch = $this->matchRoute($route['path'], $request->path, $params);
+            if ($isPathMatch) {
+                if ($route['method'] === '*' || $route['method'] === $request->method) {
+                    $matchedRoute = $route;
+                    $matchedParams = $params;
+                    break;
+                } else {
+                    $allowedMethods[] = $route['method'];
                 }
-
-                // Add final route callback
-                $handlers[] = function($req, $next) use ($route) {
-                    $callback = $this->resolveCallback($route['callback']);
-                    return call_user_func($callback, $req, $this);
-                };
-                $routeFound = true;
-                break;
             }
         }
 
-        if (!$routeFound) {
+        if ($matchedRoute !== null) {
+            $request->params = $matchedParams;
+
+            // Add route-specific middlewares
+            foreach ($matchedRoute['middlewares'] as $mw) {
+                $handlers[] = function($req, $next) use ($mw) {
+                    $resolved = $this->resolveMiddleware($mw);
+                    return call_user_func($resolved, $req, $next, $this);
+                };
+            }
+
+            // Add final route callback
+            $handlers[] = function($req, $next) use ($matchedRoute) {
+                $callback = $this->resolveCallback($matchedRoute['callback']);
+                return call_user_func($callback, $req, $this);
+            };
+        } elseif (!empty($allowedMethods)) {
+            // 405 Method Not Allowed
+            $handlers[] = function($req, $next) use ($allowedMethods) {
+                return call_user_func($this->methodNotAllowedHandler, $req, $allowedMethods, $this);
+            };
+        } else {
+            // 404 Not Found
             $handlers[] = function($req, $next) {
                 return call_user_func($this->notFoundHandler, $req, $this);
             };
         }
 
-        // 3. Execution pipeline
+        // 3. Execution pipeline with automatic response normalization
         $index = 0;
-        $next = function($req) use (&$handlers, &$index, &$next) {
+        $next = function($req) use (&$handlers, &$index, &$next): Response {
             if ($index >= count($handlers)) {
-                return null;
+                return Response::noContent(204);
             }
             $handler = $handlers[$index++];
-            return $handler($req, $next);
+            $result = $handler($req, $next);
+
+            if ($result instanceof Response) {
+                return $result;
+            }
+            if (is_array($result) || is_object($result)) {
+                return Response::json($result);
+            }
+            return Response::text((string)$result);
         };
 
         try {
             $response = $next($request);
         } catch (\Throwable $e) {
             error_log('[Wisp\App] Unhandled error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
-            // Discard whatever a warning-turned-exception (or the route itself) may have
-            // already echoed before throwing, so the client only ever sees the clean error
-            // below instead of a mix of stray output + error body.
             if (ob_get_level() > 0) {
                 ob_clean();
             }
@@ -365,7 +433,14 @@ class App {
 
             if ($this->errorHandler !== null) {
                 try {
-                    $response = call_user_func($this->errorHandler, $e, $request, $this);
+                    $result = call_user_func($this->errorHandler, $e, $request, $this);
+                    if ($result instanceof Response) {
+                        $response = $result;
+                    } elseif (is_array($result) || is_object($result)) {
+                        $response = Response::json($result, 500);
+                    } elseif ($result !== null) {
+                        $response = Response::text((string)$result, 500);
+                    }
                 } catch (\Throwable $handlerEx) {
                     error_log('[Wisp\App] Error in custom errorHandler: ' . $handlerEx->getMessage());
                     $e = $handlerEx;
@@ -377,16 +452,42 @@ class App {
             }
         }
 
-        if ($response instanceof Response) {
-            $response->send();
-        } else {
-            if (is_array($response) || is_object($response)) {
-                Response::json($response)->send();
-            } else {
-                Response::text((string)$response)->send();
+        $this->applySecurityAndCorsHeaders($response, $corsOrigin, $allowCredentials);
+
+        return $response;
+    }
+
+    public function run(): void {
+        $this->registerErrorHandling();
+        ob_start();
+        $request = new Request();
+        $response = $this->handle($request);
+        $response->send();
+        ob_end_flush();
+    }
+
+    private function applySecurityAndCorsHeaders(Response $response, ?string $corsOrigin, bool $allowCredentials): void {
+        if ($corsOrigin !== null) {
+            $response->setHeader('Access-Control-Allow-Origin', $corsOrigin);
+            $response->setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+            $response->setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+            if ($allowCredentials) {
+                $response->setHeader('Access-Control-Allow-Credentials', 'true');
             }
         }
-        ob_end_flush();
+
+        if (!$response->getHeader('X-Content-Type-Options')) {
+            $response->setHeader('X-Content-Type-Options', 'nosniff');
+        }
+        if (!$response->getHeader('X-Frame-Options')) {
+            $response->setHeader('X-Frame-Options', 'DENY');
+        }
+        if (!$response->getHeader('Referrer-Policy')) {
+            $response->setHeader('Referrer-Policy', 'no-referrer');
+        }
+        if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' && !$response->getHeader('Strict-Transport-Security')) {
+            $response->setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+        }
     }
 
     private function resolveCallback($callback): callable {
@@ -459,7 +560,16 @@ class App {
         $routePath = ($routePath === '/') ? '/' : rtrim($routePath, '/');
         $requestPath = ($requestPath === '/') ? '/' : rtrim($requestPath, '/');
 
+        if ($routePath === $requestPath) {
+            return true;
+        }
+
+        // Support named parameters: :param -> (?P<param>[^/]+)
         $pattern = preg_replace('/:([a-zA-Z0-9_]+)/', '(?P<$1>[^/]+)', $routePath);
+        // Support named catch-all wildcard: *param -> (?P<param>.*)
+        $pattern = preg_replace('/\*([a-zA-Z0-9_]+)/', '(?P<$1>.*)', $pattern);
+        // Support bare wildcard: * -> .* (avoid matching * inside (?P<name>.*))
+        $pattern = preg_replace('/(?<!\(\?P<[a-zA-Z0-9_]{1,30}>)\*/', '.*', $pattern);
         $pattern = '#^' . $pattern . '$#';
 
         if (preg_match($pattern, $requestPath, $matches)) {
