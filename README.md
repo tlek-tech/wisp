@@ -25,39 +25,46 @@ It features an **onion-style middleware pipeline**, a **reflective auto-wiring D
 ## Directory Structure
 
 ```text
-api_php/
-├── composer.json               # Composer configuration and PSR-4 settings
+wisp-core/
+├── composer.json               # Composer configuration, PSR-4 (Wisp\) and required PHP extensions
 ├── LICENSE                     # MIT License
 ├── README.md                   # Project documentation
 ├── .gitignore                  # Git untracked files
-├── .env.example                # Template database credentials
+├── .env.example                # Template for environment variables (DB, CORS, TRUSTED_PROXIES, ...)
 ├── .env                        # Active environment variables (git-ignored)
-├── router.php                  # Routing script for PHP built-in server
+├── router.php                  # Routing script for PHP built-in server (static files + front controller)
+├── wisp                        # CLI entrypoint (php wisp <command>)
+├── wisp.bat                    # Windows launcher for the CLI
 │
 ├── config/                     # Decoupled global registrations
 │   ├── services.php            # Manual service container registrations
 │   └── middlewares.php         # Global middleware registrations
 │
 ├── public/                     # Public web root
-│   ├── index.php               # Entrypoint & bootstrap front controller
+│   ├── index.php               # Front controller: boots via Wisp\Bootstrap, then runs the app
 │   └── .htaccess               # Apache rewrite rules for clean URLs
 │
 ├── src/                        # Wisp Core Classes (Namespace: Wisp\)
-│   ├── App.php                 # Core router, DI container, autowiring, & middleware pipeline
-│   ├── Request.php             # Request model wrapper
+│   ├── App.php                 # Core router, DI container, autowiring, CORS & middleware pipeline
+│   ├── Bootstrap.php           # Shared startup: autoloader, .env parser, plugin/config/route loading
+│   ├── Console.php             # CLI runner and built-in commands (used by `wisp`)
+│   ├── Request.php             # Request model wrapper (client IP, headers, JSON body, macros)
 │   ├── Response.php            # Response model wrapper
 │   └── DB.php                  # Database wrapper around PDO (MySQL, PostgreSQL, SQLite)
 │
-├── middlewares/                # Custom route/global middleware classes
+├── middlewares/                # Custom route/global middleware classes (global namespace, auto-loaded)
 │   ├── AuthMiddleware.php      # Example: Bearer token validation middleware
-│   └── RateLimitMiddleware.php # Example: Rate limit middleware class
+│   └── RateLimitMiddleware.php # Example: Per-IP rate limit middleware (file-based)
 │
-├── services/                   # Custom service classes (Auto-wired)
+├── services/                   # Custom service classes (Auto-wired, global namespace)
 │   └── TranslateService.php    # Example: Service class with automatic DB injection
 │
 ├── routes/                     # Dynamic route files (Auto-loaded)
 │   ├── version.php             # Example: Version check endpoint route
-│   └── license.php             # Example: License and translation endpoint routes
+│   └── license.php             # Example: License route, plus APP_DEBUG-only demo routes
+│
+├── storage/                    # Runtime files, contents git-ignored
+│   └── rate_limit/             # Counters written by RateLimitMiddleware
 │
 └── plugins/                    # Optional, downloadable add-ons (empty by default)
     └── <name>/<name>.php       # Drop-in convention picked up automatically at boot
