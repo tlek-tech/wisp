@@ -137,7 +137,20 @@ class Request {
         return null;
     }
 
+    // Client IP. CF-Connecting-IP / X-Forwarded-For / X-Real-IP are plain request headers that
+    // any client can set, so they are only believed when the TCP peer (REMOTE_ADDR) is a proxy
+    // listed in TRUSTED_PROXIES (comma-separated IPs/CIDRs, or "*" to trust every peer — only
+    // safe when the origin is reachable exclusively through the proxy). Otherwise REMOTE_ADDR
+    // is returned, so rate limiting and logging can't be dodged by spoofing a header.
     public function ip(): string {
+        $remote = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+        $rules = array_filter(array_map('trim', explode(',', $_ENV['TRUSTED_PROXIES'] ?? '')), 'strlen');
+        if (!$rules || !self::ipInList($remote, $rules)) {
+            return $remote;
+        }
+        $trustAll = in_array('*', $rules, true);
+
         $cfIp = $this->header('CF-Connecting-IP');
         if ($cfIp !== null && filter_var(trim($cfIp), FILTER_VALIDATE_IP)) {
             return trim($cfIp);
@@ -145,10 +158,23 @@ class Request {
 
         $xff = $this->header('X-Forwarded-For');
         if ($xff !== null) {
-            $ips = explode(',', $xff);
-            $clientIp = trim($ips[0]);
-            if (filter_var($clientIp, FILTER_VALIDATE_IP)) {
-                return $clientIp;
+            $chain = array_map('trim', explode(',', $xff));
+            // Each proxy appends the address it saw, so only the right-hand entries were added
+            // by proxies we trust; the left-hand ones are client-supplied. Walk from the right
+            // and stop at the first address that isn't one of our proxies. With "*" there is no
+            // way to tell proxies apart, so fall back to the left-most entry.
+            if ($trustAll) {
+                $chain = array_slice($chain, 0, 1);
+            } else {
+                $chain = array_reverse($chain);
+            }
+            foreach ($chain as $candidate) {
+                if (!filter_var($candidate, FILTER_VALIDATE_IP)) {
+                    break;
+                }
+                if ($trustAll || !self::ipInList($candidate, $rules)) {
+                    return $candidate;
+                }
             }
         }
 
@@ -157,7 +183,51 @@ class Request {
             return trim($realIp);
         }
 
-        return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        return $remote;
+    }
+
+    private static function ipInList(string $ip, array $rules): bool {
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        $ipBin = inet_pton($ip);
+
+        foreach ($rules as $rule) {
+            if ($rule === '*') {
+                return true;
+            }
+            $parts = explode('/', $rule, 2);
+            if (!filter_var($parts[0], FILTER_VALIDATE_IP)) {
+                continue;
+            }
+            $subnetBin = inet_pton($parts[0]);
+            if (strlen($subnetBin) !== strlen($ipBin)) {
+                continue; // IPv4 rule vs IPv6 address (or the reverse)
+            }
+            $maxBits = strlen($ipBin) * 8;
+            if (isset($parts[1])) {
+                if (!ctype_digit($parts[1]) || (int)$parts[1] > $maxBits) {
+                    continue;
+                }
+                $bits = (int)$parts[1];
+            } else {
+                $bits = $maxBits;
+            }
+
+            $bytes = intdiv($bits, 8);
+            $rest = $bits % 8;
+            if ($bytes > 0 && substr($ipBin, 0, $bytes) !== substr($subnetBin, 0, $bytes)) {
+                continue;
+            }
+            if ($rest > 0) {
+                $mask = (0xFF << (8 - $rest)) & 0xFF;
+                if ((ord($ipBin[$bytes]) & $mask) !== (ord($subnetBin[$bytes]) & $mask)) {
+                    continue;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     public function cookie(string $name, $default = null): ?string {

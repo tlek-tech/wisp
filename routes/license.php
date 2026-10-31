@@ -24,7 +24,11 @@ if (($_ENV['APP_DEBUG'] ?? 'false') === 'true') {
     $app->get("/db-test", function($req, $env) {
         try {
             $pdo = $env->db;
-            $stmt = $pdo->prepare("SELECT VERSION() as version");
+            // sqlite has no VERSION(); mysql and pgsql do.
+            $versionSql = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME) === 'sqlite'
+                ? "SELECT sqlite_version() as version"
+                : "SELECT VERSION() as version";
+            $stmt = $pdo->prepare($versionSql);
             $stmt->execute();
             $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 

@@ -27,60 +27,9 @@ class Console {
             define('APP_ROOT', $appRoot);
         }
 
-        // 1. Autoloader and .env
-        if (file_exists(APP_ROOT . '/vendor/autoload.php')) {
-            require_once APP_ROOT . '/vendor/autoload.php';
-            if (file_exists(APP_ROOT . '/.env') && class_exists('Dotenv\Dotenv')) {
-                $dotenv = \Dotenv\Dotenv::createImmutable(APP_ROOT);
-                $dotenv->load();
-            }
-        } else {
-            // Fallback autoloader
-            spl_autoload_register(function ($class) {
-                $prefix = 'Wisp\\';
-                $base_dir = APP_ROOT . '/src/';
-                $len = strlen($prefix);
-                if (strncmp($prefix, $class, $len) === 0) {
-                    $relative_class = substr($class, $len);
-                    $file = $base_dir . str_replace('\\', '/', $relative_class) . '.php';
-                    if (file_exists($file)) {
-                        require_once $file;
-                        return;
-                    }
-                }
-
-                $dirs = [APP_ROOT . '/services/', APP_ROOT . '/middlewares/'];
-                foreach ($dirs as $dir) {
-                    $file = $dir . str_replace('\\', '/', $class) . '.php';
-                    if (file_exists($file)) {
-                        require_once $file;
-                        return;
-                    }
-                }
-            });
-
-            // Fallback .env parser
-            if (file_exists(APP_ROOT . '/.env')) {
-                $lines = file(APP_ROOT . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if ($line === '' || strpos($line, '#') === 0) continue;
-                    if (strpos($line, '=') !== false) {
-                        list($name, $value) = explode('=', $line, 2);
-                        $name = trim($name);
-                        $value = trim($value);
-                        if (preg_match('/^"(.*)"$/', $value, $matches) || preg_match('/^\'(.*)\'$/', $value, $matches)) {
-                            $value = $matches[1];
-                        }
-                        if (!array_key_exists($name, $_SERVER) && !array_key_exists($name, $_ENV)) {
-                            putenv(sprintf('%s=%s', $name, $value));
-                            $_ENV[$name] = $value;
-                            $_SERVER[$name] = $value;
-                        }
-                    }
-                }
-            }
-        }
+        // 1. Autoloader and .env (shared with public/index.php)
+        require_once __DIR__ . '/Bootstrap.php';
+        Bootstrap::init(APP_ROOT);
 
         // Aliases
         if (!class_exists('Response', false)) {
@@ -98,38 +47,8 @@ class Console {
         global $app;
         $app = self::$app;
 
-        // Load plugins
-        $pluginsDir = APP_ROOT . '/plugins';
-        if (is_dir($pluginsDir)) {
-            foreach (scandir($pluginsDir) as $item) {
-                if ($item === '.' || $item === '..') continue;
-                $fullPath = $pluginsDir . '/' . $item;
-                if (is_dir($fullPath)) {
-                    $pluginFile = $fullPath . '/' . $item . '.php';
-                    if (file_exists($pluginFile)) {
-                        require_once $pluginFile;
-                    }
-                } elseif (is_file($fullPath) && pathinfo($fullPath, PATHINFO_EXTENSION) === 'php') {
-                    require_once $fullPath;
-                }
-            }
-        }
-
-        // Load configs
-        if (file_exists(APP_ROOT . '/config/services.php')) {
-            require_once APP_ROOT . '/config/services.php';
-        }
-        if (file_exists(APP_ROOT . '/config/middlewares.php')) {
-            require_once APP_ROOT . '/config/middlewares.php';
-        }
-
-        // Load routes
-        $routesDir = APP_ROOT . '/routes';
-        if (is_dir($routesDir)) {
-            foreach (glob($routesDir . '/*.php') as $routeFile) {
-                require_once $routeFile;
-            }
-        }
+        // Plugins, config/ and routes/ (shared with public/index.php)
+        Bootstrap::load(self::$app, APP_ROOT);
 
         self::$bootstrapped = true;
         return self::$app;
@@ -259,13 +178,25 @@ class Console {
                 }
             }
 
+            if (!ctype_digit((string)$port) || (int)$port < 1 || (int)$port > 65535) {
+                self::error("Invalid port: '{$port}'");
+                return 1;
+            }
+
             echo self::color("🌬️ Wisp Development Server", 'cyan') . "\n";
             echo "   URL:           " . self::color("http://{$host}:{$port}", 'green') . "\n";
             echo "   Document Root: " . self::color($appRoot . '/public', 'dim') . "\n";
             echo "   PHP Version:   " . self::color(PHP_VERSION, 'dim') . "\n";
             echo "   Press Ctrl+C to stop the server.\n\n";
 
-            $cmd = sprintf('php -S %s:%s router.php', escapeshellarg($host), escapeshellarg($port));
+            // router.php and public/ are resolved against the app root, not whatever directory
+            // the command happened to be started from.
+            chdir($appRoot);
+            $cmd = sprintf(
+                '%s -S %s -t public router.php',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg($host . ':' . $port)
+            );
             passthru($cmd);
             return 0;
         }, 'Start the local PHP development server');

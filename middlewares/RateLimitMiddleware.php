@@ -15,6 +15,7 @@ class RateLimitMiddleware {
     }
 
     public function handle($req, $next, $env) {
+        // Keyed on $req->ip(), which only honours proxy headers from TRUSTED_PROXIES — see Request::ip().
         $ip = $req->ip();
         // ":" (present in every IPv6 address, e.g. "::1" for loopback) is invalid in Windows
         // filenames, so it can't be left in the allowed set here even though it's harmless on
@@ -23,7 +24,9 @@ class RateLimitMiddleware {
         $key = preg_replace('/[^a-zA-Z0-9_.-]/', '_', $ip);
         $file = $this->storageDir . '/' . $key . '.json';
 
-        $fp = fopen($file, 'c+');
+        // "@": App's error handler turns every warning into an ErrorException, which would make
+        // the fail-open branch below unreachable (fopen() throws instead of returning false).
+        $fp = @fopen($file, 'c+');
         if ($fp === false) {
             // Storage unavailable — fail open rather than blocking all traffic.
             return $next($req);
@@ -47,6 +50,8 @@ class RateLimitMiddleware {
         flock($fp, LOCK_UN);
         fclose($fp);
 
+        $this->purgeExpired($now);
+
         if ($data['count'] > $this->maxAttempts) {
             $retryAfter = max(1, $data['reset'] - $now);
             return Response::json([
@@ -56,5 +61,20 @@ class RateLimitMiddleware {
         }
 
         return $next($req);
+    }
+
+    // One file per client IP would otherwise pile up forever. A window ends at most
+    // windowSeconds after the file was first written, so a file untouched for longer than that
+    // is expired and safe to delete. Runs on ~1% of requests to keep the hot path cheap.
+    private function purgeExpired(int $now): void {
+        if (mt_rand(1, 100) !== 1) {
+            return;
+        }
+        foreach ((array)glob($this->storageDir . '/*.json') as $file) {
+            $mtime = @filemtime($file);
+            if ($mtime !== false && $mtime < $now - $this->windowSeconds) {
+                @unlink($file);
+            }
+        }
     }
 }

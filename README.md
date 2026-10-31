@@ -68,7 +68,11 @@ api_php/
 ## Getting Started
 
 ### 1. Requirements
-- PHP 7.4 or higher (fully compatible with PHP 8.0, 8.1, 8.2, 8.3+)
+- PHP 7.4 or higher (fully compatible with PHP 8.0, 8.1, 8.2, 8.3+) for the core itself. Some
+  official plugins use newer syntax: `wisp-db-builder` (and `wisp-mvc`, which builds on it)
+  needs PHP 8.0+. A plugin that fails to load is logged and skipped instead of taking the
+  whole app down.
+- Extensions: `pdo` (plus `pdo_mysql` / `pdo_pgsql` / `pdo_sqlite` for your driver), `mbstring`, `json`
 - MySQL, PostgreSQL, or SQLite (if using database functionality)
 - Composer (optional)
 
@@ -278,7 +282,9 @@ $app->post('/api/profile', function($req) {
     // 2. Authentication token extraction
     $token = $req->bearerToken(); // extracts from 'Authorization: Bearer <token>'
 
-    // 3. Client IP (handles Cloudflare CF-Connecting-IP, X-Forwarded-For, and REMOTE_ADDR)
+    // 3. Client IP. Returns REMOTE_ADDR; CF-Connecting-IP / X-Forwarded-For / X-Real-IP are
+    //    only honoured when REMOTE_ADDR is listed in TRUSTED_PROXIES (see .env.example).
+    //    Behind Cloudflare or a load balancer, set TRUSTED_PROXIES or every client looks like the proxy.
     $ip = $req->ip();
 
     // 4. Cookies & file uploads
@@ -368,7 +374,8 @@ into the framework. Nothing under `plugins/` is required for Wisp to run.
 
 **How it works:** any folder dropped into `plugins/` whose entry file matches the
 folder name (`plugins/<name>/<name>.php`), or any flat `plugins/*.php` file, is
-automatically `require`'d at boot by `public/index.php`. A plugin wires itself up
+automatically `require`'d at boot by `public/index.php` and by the CLI (`php wisp`), so a
+plugin can also add CLI commands with `$app->command()`. A plugin wires itself up
 using the extension points already built into core:
 
 - `Request::macro(string $name, callable $fn)` — add methods to every `Request` (e.g. `$req->user()`)

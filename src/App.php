@@ -246,14 +246,7 @@ class App {
             throw new \InvalidArgumentException("Last argument of App::group() must be a callable.");
         }
 
-        $groupMiddlewares = [];
-        foreach ($args as $arg) {
-            if (is_array($arg)) {
-                $groupMiddlewares = array_merge($groupMiddlewares, $arg);
-            } else {
-                $groupMiddlewares[] = $arg;
-            }
-        }
+        $groupMiddlewares = $this->flattenMiddlewares($args);
 
         $prevPrefix = $this->currentGroupPrefix;
         $prevMiddlewares = $this->currentGroupMiddlewares;
@@ -302,19 +295,34 @@ class App {
         return $this->middlewares;
     }
 
+    // Middleware arguments may be given one by one or as a list ([A::class, B::class]). A
+    // callable array such as [$instance, 'handle'] is ONE middleware, not a list of two.
+    private function flattenMiddlewares(array $items): array {
+        $flat = [];
+        foreach ($items as $item) {
+            if (is_array($item) && !$this->isCallableArray($item)) {
+                $flat = array_merge($flat, $this->flattenMiddlewares($item));
+            } else {
+                $flat[] = $item;
+            }
+        }
+        return $flat;
+    }
+
+    private function isCallableArray(array $value): bool {
+        return count($value) === 2
+            && isset($value[0], $value[1])
+            && is_string($value[1])
+            && (is_object($value[0]) || is_string($value[0]))
+            && is_callable($value);
+    }
+
     private function addRoute(string $method, string $path, array $handlers) {
         // Last item is the controller callback
         $callback = array_pop($handlers);
 
         // All items before are route-specific middlewares
-        $routeMiddlewares = [];
-        foreach ($handlers as $h) {
-            if (is_array($h)) {
-                $routeMiddlewares = array_merge($routeMiddlewares, $h);
-            } else {
-                $routeMiddlewares[] = $h;
-            }
-        }
+        $routeMiddlewares = $this->flattenMiddlewares($handlers);
 
         // Apply group prefix if active
         if ($this->currentGroupPrefix !== '') {
@@ -350,10 +358,17 @@ class App {
     // Promoting it to an ErrorException makes it behave like any other error: it interrupts
     // execution and is caught below (or by a route's own try/catch) instead of leaking into
     // the output.
+    // Deprecations are the exception: they flag code that still works (and often come from
+    // vendor/ or plugin code the app owner doesn't control, e.g. strlen(null) on PHP 8.1+), so
+    // they are logged and execution continues instead of turning the request into a 500.
     private function registerErrorHandling() {
         set_error_handler(function ($errno, $errstr, $errfile, $errline) {
             if (!(error_reporting() & $errno)) {
                 return false; // respects both @-suppression and the ini error_reporting mask
+            }
+            if ($errno === E_DEPRECATED || $errno === E_USER_DEPRECATED) {
+                error_log("[Wisp\\App] Deprecated: $errstr in $errfile:$errline");
+                return true;
             }
             throw new \ErrorException($errstr, 0, $errno, $errfile, $errline);
         });
@@ -406,24 +421,51 @@ class App {
         $allowCredentials = ($_ENV['CORS_ALLOW_CREDENTIALS'] ?? 'false') === 'true';
 
         $corsOrigin = null;
-        if ($requestOrigin) {
+        $varyOrigin = false;
+        // Browsers also send Origin on same-origin POST/PUT/DELETE (e.g. a form served by this
+        // app), so an Origin that names this very host is not a cross-origin request and must
+        // not be checked against ALLOWED_ORIGIN.
+        if ($requestOrigin && !$this->isSameOrigin($request, $requestOrigin)) {
             if ($allowedOrigin === '*') {
                 $corsOrigin = $allowCredentials ? $requestOrigin : '*';
+                $varyOrigin = $allowCredentials;
             } else {
+                $varyOrigin = true;
                 $allowedOrigins = array_map('trim', explode(',', $allowedOrigin));
                 if (!in_array($requestOrigin, $allowedOrigins, true)) {
                     $forbidden = Response::json(['error' => 'Forbidden: Invalid Origin'], 403);
-                    $this->applySecurityAndCorsHeaders($forbidden, null, false);
+                    $this->applySecurityAndCorsHeaders($forbidden, null, false, $varyOrigin);
                     return $forbidden;
                 }
                 $corsOrigin = $requestOrigin;
             }
         }
 
+        // Preflight/OPTIONS is answered automatically, unless the app defined its own OPTIONS
+        // route for this path.
         if ($request->method === 'OPTIONS') {
-            $optionsRes = Response::noContent(204);
-            $this->applySecurityAndCorsHeaders($optionsRes, $corsOrigin, $allowCredentials);
-            return $optionsRes;
+            $optionsMethods = ['OPTIONS'];
+            $hasOwnOptionsRoute = false;
+            foreach ($this->routes as $route) {
+                if (!$this->matchRoute($route['path'], $request->path, $unused)) {
+                    continue;
+                }
+                if ($route['method'] === 'OPTIONS') {
+                    $hasOwnOptionsRoute = true;
+                    break;
+                }
+                $optionsMethods[] = $route['method'] === '*' ? 'GET, POST, PUT, DELETE, PATCH' : $route['method'];
+            }
+
+            if (!$hasOwnOptionsRoute) {
+                $optionsRes = Response::noContent(204);
+                $methods = count($optionsMethods) > 1 ? implode(', ', array_unique($optionsMethods)) : null;
+                if ($methods !== null) {
+                    $optionsRes->setHeader('Allow', $methods);
+                }
+                $this->applySecurityAndCorsHeaders($optionsRes, $corsOrigin, $allowCredentials, $varyOrigin, $methods);
+                return $optionsRes;
+            }
         }
 
         $handlers = [];
@@ -533,9 +575,29 @@ class App {
             }
         }
 
-        $this->applySecurityAndCorsHeaders($response, $corsOrigin, $allowCredentials);
+        $this->applySecurityAndCorsHeaders($response, $corsOrigin, $allowCredentials, $varyOrigin);
 
         return $response;
+    }
+
+    private function isSameOrigin(Request $request, string $origin): bool {
+        $host = $request->header('Host');
+        if ($host === null || $host === '') {
+            return false;
+        }
+
+        $originParts = parse_url($origin);
+        if (!$originParts || empty($originParts['scheme']) || empty($originParts['host'])) {
+            return false; // e.g. "null" or malformed
+        }
+        $hostParts = parse_url('//' . $host);
+        if (!$hostParts || empty($hostParts['host'])) {
+            return false;
+        }
+
+        $defaultPort = strtolower($originParts['scheme']) === 'https' ? 443 : 80;
+        return strcasecmp($originParts['host'], $hostParts['host']) === 0
+            && ($originParts['port'] ?? $defaultPort) === ($hostParts['port'] ?? $defaultPort);
     }
 
     public function run(): void {
@@ -547,10 +609,27 @@ class App {
         ob_end_flush();
     }
 
-    private function applySecurityAndCorsHeaders(Response $response, ?string $corsOrigin, bool $allowCredentials): void {
+    private function applySecurityAndCorsHeaders(
+        Response $response,
+        ?string $corsOrigin,
+        bool $allowCredentials,
+        bool $varyOrigin = false,
+        ?string $allowMethods = null
+    ): void {
+        // The response differs per Origin whenever it is checked against / reflected from a list,
+        // so shared caches must not serve one origin's answer to another.
+        if ($varyOrigin) {
+            $vary = $response->getHeader('Vary');
+            if (!$vary) {
+                $response->setHeader('Vary', 'Origin');
+            } elseif (stripos($vary, 'Origin') === false) {
+                $response->setHeader('Vary', $vary . ', Origin');
+            }
+        }
+
         if ($corsOrigin !== null) {
             $response->setHeader('Access-Control-Allow-Origin', $corsOrigin);
-            $response->setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+            $response->setHeader('Access-Control-Allow-Methods', $allowMethods ?? 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
             $response->setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
             if ($allowCredentials) {
                 $response->setHeader('Access-Control-Allow-Credentials', 'true');
@@ -645,12 +724,21 @@ class App {
             return true;
         }
 
-        // Support named parameters: :param -> (?P<param>[^/]+)
-        $pattern = preg_replace('/:([a-zA-Z0-9_]+)/', '(?P<$1>[^/]+)', $routePath);
-        // Support named catch-all wildcard: *param -> (?P<param>.*)
-        $pattern = preg_replace('/\*([a-zA-Z0-9_]+)/', '(?P<$1>.*)', $pattern);
-        // Support bare wildcard: * -> .* (avoid matching * inside (?P<name>.*))
-        $pattern = preg_replace('/(?<!\(\?P<[a-zA-Z0-9_]{1,30}>)\*/', '.*', $pattern);
+        // Literal text is preg_quote()d, so "." or "(" in a route path match themselves instead
+        // of acting as regex syntax. The only special tokens are:
+        //   :param -> (?P<param>[^/]+)   *param -> (?P<param>.*)   * -> .*
+        $pattern = '';
+        foreach (preg_split('/(:[a-zA-Z_][a-zA-Z0-9_]*|\*[a-zA-Z_][a-zA-Z0-9_]*|\*)/', $routePath, -1, PREG_SPLIT_DELIM_CAPTURE) as $i => $part) {
+            if ($i % 2 === 0) {
+                $pattern .= preg_quote($part, '#');
+            } elseif ($part === '*') {
+                $pattern .= '.*';
+            } elseif ($part[0] === ':') {
+                $pattern .= '(?P<' . substr($part, 1) . '>[^/]+)';
+            } else {
+                $pattern .= '(?P<' . substr($part, 1) . '>.*)';
+            }
+        }
         $pattern = '#^' . $pattern . '$#';
 
         if (preg_match($pattern, $requestPath, $matches)) {
