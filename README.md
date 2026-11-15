@@ -398,6 +398,8 @@ No manifest or dependency system exists yet — installing a plugin is just copy
 - [wisp-db-builder](https://github.com/tlek-tech/wisp-db-builder) — fluent query builder for `DB::table()`
 - [wisp-migration](https://github.com/tlek-tech/wisp-migration) — database migrations and CLI runner (`wisp migrate`, `\Wisp\Migrator`)
 - [wisp-mvc](https://github.com/tlek-tech/wisp-mvc) — MVC architecture with Controllers, Models (Active Record), and Blade-style Views
+- [wisp-storage](https://github.com/tlek-tech/wisp-storage) — unified file storage for local disk and S3/R2 (`\Wisp\Storage`, `Storage` facade, `$req->upload()`, signed URLs)
+- [wisp-queue](https://github.com/tlek-tech/wisp-queue) — zero-dependency queue worker & cron task scheduler (`\Wisp\Queue`, `\Wisp\Schedule`, `Job::dispatch()`, `wisp queue:*`, `wisp schedule:*`)
 
 ---
 
